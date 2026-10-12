@@ -16,3 +16,6 @@ capture-*/
 *.whisper.txt
 *.bin
 .DS_Store
+__pycache__/
+*.pyc
+linux/recordings/

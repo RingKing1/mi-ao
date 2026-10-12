@@ -1,0 +1,82 @@
+#!/bin/bash
+# 米遥 (MI-AO) Linux 便捷管理工具
+set -e
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+SERVICE_NAME="mi-ao"
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+
+install_service() {
+    mkdir -p "$SYSTEMD_USER_DIR"
+    cp "$DIR/mi-ao.service" "$SYSTEMD_USER_DIR/mi-ao.service"
+    systemctl --user daemon-reload
+}
+
+case "$1" in
+    start)
+        install_service
+        systemctl --user start "$SERVICE_NAME"
+        echo ">> 米遥服务已在后台启动"
+        systemctl --user status "$SERVICE_NAME" --no-pager
+        ;;
+    stop)
+        systemctl --user stop "$SERVICE_NAME"
+        echo ">> 米遥服务已停止"
+        ;;
+    restart)
+        install_service
+        systemctl --user restart "$SERVICE_NAME"
+        echo ">> 米遥服务已重启"
+        ;;
+    status)
+        echo "=== 系统状态检查 ==="
+        echo -n "遥控器蓝牙连接: "
+        if bluetoothctl devices Connected | grep -q "小米"; then
+            echo "已连接 ($(bluetoothctl devices Connected | grep "小米" | head -n1))"
+        else
+            echo "未连接 (请检查蓝牙)"
+        fi
+
+        echo -n "输入设备节点: "
+        if grep -q "小米" /proc/bus/input/devices 2>/dev/null; then
+            echo "已识别 (/dev/input)"
+        else
+            echo "未识别"
+        fi
+
+        echo ""
+        echo "=== 后台守护服务状态 ==="
+        systemctl --user status "$SERVICE_NAME" --no-pager || true
+        ;;
+    enable)
+        install_service
+        systemctl --user enable "$SERVICE_NAME"
+        echo ">> 米遥服务已配置为【登录开机自动启动】"
+        ;;
+    disable)
+        systemctl --user disable "$SERVICE_NAME"
+        echo ">> 已取消开机自启"
+        ;;
+    logs)
+        echo ">> 正在监听实时语音识别日志 (按 Ctrl+C 退出)..."
+        journalctl --user -u "$SERVICE_NAME" -f -o cat
+        ;;
+    test)
+        echo ">> 正在启动前台测试模式..."
+        python3 "$DIR/mi_ao_service.py"
+        ;;
+    *)
+        echo "米遥 (MI-AO) Linux 管理命令行"
+        echo "用法: $0 {start|stop|restart|status|enable|disable|logs|test}"
+        echo ""
+        echo "  start    - 在后台启动米遥服务"
+        echo "  stop     - 停止后台服务"
+        echo "  restart  - 重启后台服务"
+        echo "  status   - 查看遥控器连接与服务运行状态"
+        echo "  enable   - 设置开机自动在后台启动"
+        echo "  disable  - 取消开机自启"
+        echo "  logs     - 实时查看语音输入与识别日志"
+        echo "  test     - 在前台直接运行测试"
+        exit 1
+        ;;
+esac

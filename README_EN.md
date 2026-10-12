@@ -8,17 +8,18 @@
   <img src="docs/assets/mi-ao-logo.png" width="180" alt="MI-AO Center Connection logo">
 </p>
 
-**In the Vibe Coding era, turn a Xiaomi Bluetooth Remote Control 2 Pro into a real, hold-in-your-hand magic wand for Codex on Mac.**
+**In the Vibe Coding era, turn a Xiaomi Bluetooth Remote Control 2 Pro into a real, hold-in-your-hand magic wand for Codex / AI Coding on Mac & Linux.**
 
-**macOS 14 or later only; Windows and Linux are not currently supported.** Hold to talk. Release to send. Transcribed locally with Whisper. Delivered safely to Codex.
+**Now supports macOS 14+ and Linux (Ubuntu / Debian, Wayland & X11).** Hold to talk. Release to send. Transcribed locally with Whisper. Delivered safely to your AI workflow.
 
 Created, hardware-validated and maintained by **FanXeon@Poemcoder with Codex**.
 
-[English](README_EN.md) · [中文](README.md) · [V2 delivery audit](docs/V2_COMPLETION_AUDIT.md) · [Development status](docs/DEVELOPMENT_STATUS.md) · [Permissions](docs/PERMISSIONS_EN.md) · [Pair and connect](docs/PAIRING_EN.md) · [3-minute quick start](docs/QUICKSTART_EN.md) · [Button presets](docs/BUTTON_PRESETS_EN.md) · [Usage](docs/USAGE_EN.md) · [Compatibility](docs/COMPATIBILITY.md) · [Contributing](CONTRIBUTING_EN.md)
+[English](README_EN.md) · [中文](README.md) · [🐧 Linux Guide](linux/README.md) · [V2 delivery audit](docs/V2_COMPLETION_AUDIT.md) · [Development status](docs/DEVELOPMENT_STATUS.md) · [Permissions](docs/PERMISSIONS_EN.md) · [Pair and connect](docs/PAIRING_EN.md) · [3-minute quick start](docs/QUICKSTART_EN.md) · [Button presets](docs/BUTTON_PRESETS_EN.md) · [Usage](docs/USAGE_EN.md) · [Compatibility](docs/COMPATIBILITY.md) · [Contributing](CONTRIBUTING_EN.md)
 
 [![CI](https://github.com/fanxeon/mi-ao/actions/workflows/ci.yml/badge.svg)](https://github.com/fanxeon/mi-ao/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black.svg)](Package.swift)
+[![Linux](https://img.shields.io/badge/Linux-Ubuntu%20%7C%20Wayland%20%7C%20X11-blue.svg)](linux/README.md)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](Package.swift)
 [![Hardware verified](https://img.shields.io/badge/hardware-verified-2ea44f.svg)](docs/COMPATIBILITY.md)
 
@@ -81,17 +82,47 @@ Start with the [3-minute quick start](docs/QUICKSTART_EN.md), review the [permis
 
 | Area | Current requirement / included capability |
 | --- | --- |
-| Operating system | **macOS 14+**; Windows and Linux are not currently supported |
+| Operating system | **macOS 14+** or **Linux (Ubuntu 24.04/26.04+, Wayland & X11)** |
 | Verified hardware | Xiaomi Bluetooth Remote Control 2 Pro, firmware 2671, connected over Bluetooth Low Energy |
-| Target app | Codex for macOS, bundle ID `com.openai.codex` |
-| Local toolchain | Swift 6.0+, Xcode Command Line Tools, Homebrew, and `whisper.cpp` |
-| Permissions | Bluetooth is core-required; Accessibility is required only for submission or button control; Launch at Login is always optional |
-| Voice path | ATVV v0.4 / v1.0 → ADPCM decoding → local Whisper transcription → Codex |
-| Button control | The default D-pad toggles between pointer movement and arrow keys; saved custom configurations can be selected and reached from TV |
-| Diagnostics and safety | Built-in firmware 2671 hardware profile with safe local overrides; permission/runtime preflight before interception; automatic restore on exit |
-| Delivery | **Source-first beta · V2 / 0.2.2**; one local build installs a self-contained daily runtime and a real-state menu-bar GUI |
+| Target app | macOS Codex App, or Linux Clipboard / active window / file stream |
+| Local toolchain | macOS: Swift 6.0+, Xcode CLT, `whisper.cpp`<br>Linux: Python 3.10+, BlueZ, `evdev`, `faster-whisper` |
+| Permissions | Bluetooth is core-required; macOS requires Accessibility; Linux requires `input` group and `/dev/uinput` |
+| Voice path | ATVV v0.4 / v1.0 → ADPCM decoding → local Whisper transcription (~0.3s) |
+| Button control | D-pad smoothly moves pointer or arrows; Center clicks left, Back clicks right, TV toggles modes |
+| Delivery | macOS: Self-contained App with menu-bar GUI;<br>Linux: `mi-ao` CLI and `systemd --user` background daemon |
 
-The first setup needs network access to install `whisper-cpp` and download the multilingual base model. Daily transcription then runs locally. See the [3-minute quick start](docs/QUICKSTART_EN.md) for setup, the [roadmap](docs/ROADMAP.md) for the implemented/planned boundary, and the [product delivery plan](docs/PRODUCT_DELIVERY_PLAN_EN.md) for the path to a no-terminal user experience with custom shortcuts.
+---
+
+## 🐧 Linux Quick Start
+
+MI-AO now provides native Linux support located in [`linux/`](linux/README.md):
+- **Hardware-level key grabbing**: Intercepts remote keys via `evdev` (`EVIOCGRAB`), completely eliminating default arrow/enter side effects;
+- **Native Wayland air mouse**: Emulates smooth pointer movement via `/dev/uinput`, fully compatible with GNOME Wayland;
+- **Near-zero latency voice**: Listens to ATVV voice streams via BlueZ D-Bus, transcribes in-memory with local Whisper in 0.3s, and auto-syncs with the clipboard;
+- **systemd user daemon**: Runs silently in the background on login.
+
+### Quick Setup
+
+```bash
+# 1. Run installer (registers mi-ao CLI & systemd unit)
+bash linux/install.sh
+
+# 2. Configure permissions without root (one-time)
+sudo bash linux/setup_permissions.sh
+
+# 3. Start daemon and check status
+mi-ao start
+mi-ao status
+
+# 4. View real-time voice recognition logs
+mi-ao logs
+
+# 5. Enable start at login (optional)
+mi-ao enable
+```
+See the [Linux Guide](linux/README.md) for complete details.
+
+---
 
 ## Why it feels like a real magic wand
 

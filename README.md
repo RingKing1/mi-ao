@@ -8,19 +8,20 @@
   <img src="docs/assets/mi-ao-logo.png" width="180" alt="米遥 MI-AO 中心连接 Logo">
 </p>
 
-**在 Vibe Coding 时代，把小米蓝牙遥控器 2 Pro 变成 Mac 上一根真正握在手里的 Codex 魔法仙女棒。**
+**在 Vibe Coding 时代，把小米蓝牙遥控器 2 Pro 变成 Mac 与 Linux 上一根真正握在手里的 Codex / AI 编程魔法仙女棒。**
 
-**仅适用于 macOS 14 或更高版本，当前不支持 Windows / Linux。** 按住说话，松手发送。本地 Whisper 完成转写，Codex 立即开工。
+**现已支持 macOS 14+ 与 Linux（Ubuntu / Debian，Wayland 与 X11）**。按住说话，松手发送。本地 Whisper 完成转写，AI 助手立即开工。
 
 由 **FanXeon@Poemcoder with Codex** 创建、真机验证并持续维护。“是的我只手写了这一行代码，出现任何bug我宣布有codex负责”
 
 > **第一次认识米遥？** 先看 [米遥产品介绍官网](https://poemcoder.com/mi-ao)：真实的 macOS 界面、三步语音工作流和完整按键指南，会让你在安装前看清它如何把小米蓝牙遥控器 2 Pro 变成一支随手可用的 Codex 语音遥控器。源码、安装方法、兼容性证据与安全边界仍以本仓库文档为准。
 
-[中文](README.md) · [English](README_EN.md) · [V2 交付审计](docs/V2_COMPLETION_AUDIT.md) · [开发进度](docs/DEVELOPMENT_STATUS.md) · [权限与可选项](docs/PERMISSIONS.md) · [配对与连接](docs/PAIRING.md) · [3 分钟快速开始](docs/QUICKSTART.md) · [按键预设](docs/BUTTON_PRESETS.md) · [使用说明](docs/USAGE.md) · [兼容设备](docs/COMPATIBILITY.md) · [参与贡献](CONTRIBUTING.md)
+[中文](README.md) · [English](README_EN.md) · [🐧 Linux 指南](linux/README.md) · [V2 交付审计](docs/V2_COMPLETION_AUDIT.md) · [开发进度](docs/DEVELOPMENT_STATUS.md) · [权限与可选项](docs/PERMISSIONS.md) · [配对与连接](docs/PAIRING.md) · [3 分钟快速开始](docs/QUICKSTART.md) · [按键预设](docs/BUTTON_PRESETS.md) · [使用说明](docs/USAGE.md) · [兼容设备](docs/COMPATIBILITY.md) · [参与贡献](CONTRIBUTING.md)
 
 [![CI](https://github.com/fanxeon/mi-ao/actions/workflows/ci.yml/badge.svg)](https://github.com/fanxeon/mi-ao/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black.svg)](Package.swift)
+[![Linux](https://img.shields.io/badge/Linux-Ubuntu%20%7C%20Wayland%20%7C%20X11-blue.svg)](linux/README.md)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](Package.swift)
 [![Hardware verified](https://img.shields.io/badge/hardware-verified-2ea44f.svg)](docs/COMPATIBILITY.md)
 
@@ -83,17 +84,47 @@
 
 | 项目 | 当前要求 / 已实现内容 |
 | --- | --- |
-| 操作系统 | **macOS 14+**；当前不支持 Windows / Linux |
+| 操作系统 | **macOS 14+** 或 **Linux (Ubuntu 24.04/26.04+，Wayland 与 X11)** |
 | 已验证硬件 | 小米蓝牙遥控器 2 Pro，固件 2671，通过 Bluetooth Low Energy 连接 |
-| 目标应用 | Codex macOS App（bundle ID `com.openai.codex`） |
-| 本地工具链 | Swift 6.0+、Xcode Command Line Tools、Homebrew、`whisper.cpp` |
-| 系统权限 | 蓝牙是核心必需；辅助功能只在自动发送或按键控制开启时必需；登录时启动永远可选 |
-| 语音链路 | ATVV v0.4 / v1.0 → ADPCM 解码 → 本地 Whisper 转写 → Codex |
-| 按键控制 | 默认方向环可切换“移动指针 / 上下左右”；可保存多套自定义配置并由 TV 跳转 |
-| 调试与安全 | 内置固件 2671 真机档案，本地校准可安全覆盖；接管前先验证权限与运行时，退出时自动恢复 |
-| 交付形态 | **source-first beta · V2 / 0.2.2**；一条命令本地构建，安装后 App 内置日常运行组件，菜单栏 GUI 显示真实状态和安全操作 |
+| 目标应用 | macOS Codex App，或 Linux 剪贴板 / 任意激活窗口 / 历史记录 |
+| 本地工具链 | macOS: Swift 6.0+、Xcode CLT、`whisper.cpp`<br>Linux: Python 3.10+、BlueZ、`evdev`、`faster-whisper` |
+| 系统权限 | 蓝牙是核心必需；macOS 需辅助功能；Linux 需 `input` 组与 `/dev/uinput` 访问 |
+| 语音链路 | ATVV v0.4 / v1.0 → ADPCM 解码 → 本地 Whisper 转写（~0.3s） |
+| 按键控制 | 默认方向环可平滑移动鼠标或控制上下左右；OK为左键，返回为右键，TV键切模式 |
+| 交付形态 | macOS: 原生 App 与菜单栏驻留；<br>Linux: `mi-ao` 命令行工具与 `systemd --user` 后台守护进程 |
 
-首次安装需要联网安装 `whisper-cpp` 并下载多语言 base 模型；日常语音转写在本机完成。详细安装路径见 [3 分钟快速开始](docs/QUICKSTART.md)，已实现与计划中功能的边界见 [路线图](docs/ROADMAP.md) 和 [完整产品交付计划](docs/PRODUCT_DELIVERY_PLAN.md)。
+---
+
+## 🐧 Linux 版本快速上手
+
+米遥现已提供原生的 Linux 驱动与全链路服务（位于 [`linux/`](linux/README.md)）：
+- **硬件级按键独占**：基于 Linux `evdev` (`EVIOCGRAB`) 拦截遥控器，完全免除系统原生方向键/回车副作用；
+- **Wayland 原生飞鼠**：基于内核 `/dev/uinput` 虚拟设备，完美兼容 GNOME Wayland 桌面；
+- **极速语音转写**：基于 BlueZ D-Bus 监听 ATVV 语音流，采样点内存直传本地 Whisper，0.3 秒完成转写并同步剪贴板；
+- **systemd 守护进程**：开机登录自动在后台静默运行。
+
+### 一键安装与使用
+
+```bash
+# 1. 运行安装脚本（注册 mi-ao 命令行与 systemd 单元）
+bash linux/install.sh
+
+# 2. 配置免 root 权限（仅需一次）
+sudo bash linux/setup_permissions.sh
+
+# 3. 启动后台服务与查看状态
+mi-ao start
+mi-ao status
+
+# 4. 实时查看识别日志（拿起遥控器按住语音键说话）
+mi-ao logs
+
+# 5. 设置登录开机自启（可选）
+mi-ao enable
+```
+详细说明请参阅 [Linux 版使用指南](linux/README.md)。
+
+---
 
 ## 为什么它像一根真正的魔法仙女棒
 

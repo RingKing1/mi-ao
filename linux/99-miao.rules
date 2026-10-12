@@ -1,0 +1,5 @@
+# 允许 input 组与当前桌面用户免 root 访问 uinput
+KERNEL=="uinput", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# 小米蓝牙遥控器 2 Pro (Vendor 0x2717, Product 0x32b8)
+SUBSYSTEM=="input", ATTRS{idVendor}=="2717", ATTRS{idProduct}=="32b8", MODE="0660", GROUP="input", TAG+="uaccess"

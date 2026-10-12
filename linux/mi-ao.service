@@ -1,0 +1,17 @@
+[Unit]
+Description=Mi-Ao Xiaomi Remote 2 Pro Linux Daemon
+Documentation=https://github.com/fanxeon/mi-ao
+After=bluetooth.target sound.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/working_ppt/mi-ao
+ExecStart=/usr/bin/python3 %h/working_ppt/mi-ao/linux/mi_ao_service.py
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=HF_ENDPOINT=https://hf-mirror.com
+
+[Install]
+WantedBy=default.target
