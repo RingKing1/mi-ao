@@ -2,7 +2,7 @@
 # 米遥 Linux 一键安装与配置脚本
 set -e
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 BIN_DIR="$HOME/.local/bin"
 
 echo "=== 安装米遥 (MI-AO) Linux 版 ==="

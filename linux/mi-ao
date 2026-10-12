@@ -2,7 +2,7 @@
 # 米遥 (MI-AO) Linux 便捷管理工具
 set -e
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 SERVICE_NAME="mi-ao"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 
