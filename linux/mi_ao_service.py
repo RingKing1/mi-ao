@@ -1028,7 +1028,7 @@ class MiAoDaemon:
         print("==================================================", flush=True)
         print(">> 【米遥 (MI-AO) Linux 一体化守护服务启动】", flush=True)
         if self.groq_transcriber and self.groq_transcriber.is_available:
-            asr_desc = "【方案A 纯云端极简模式】(Groq Cloud whisper-large-v3, 内存~50MB, CPU 0%)"
+            asr_desc = f"【多云端高可用极简模式】({self.groq_transcriber.provider_description}, 内存~50MB, CPU 0%)"
             voice_desc = "按住【语音键】说话，松开后整句极速上屏！"
         else:
             local_name = self.transcriber.final_model_name if self.transcriber else "base"
