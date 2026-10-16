@@ -24,7 +24,7 @@ except ImportError:
     pass
 
 class LinuxSubmitter:
-    def __init__(self, base_dir: str = None, uinput_keyboard: Optional[UInput] = None):
+    def __init__(self, base_dir: str = None, uinput_keyboard: Optional[UInput] = None, paste_mode: str = "gui"):
         if not base_dir:
             base_dir = os.path.dirname(os.path.abspath(__file__))
         self.base_dir = base_dir
@@ -35,6 +35,12 @@ class LinuxSubmitter:
         self.history_log_path = os.path.join(self.recordings_dir, "history.jsonl")
 
         self.ui_kb = uinput_keyboard
+        self.paste_mode = paste_mode  # "gui" (Ctrl+V), "terminal" (Ctrl+Shift+V), "universal" (Shift+Insert)
+
+    def set_paste_mode(self, mode: str):
+        """设置粘贴按键模式"""
+        if mode in ("gui", "terminal", "universal"):
+            self.paste_mode = mode
 
     def set_keyboard_device(self, ui: UInput):
         self.ui_kb = ui
@@ -95,22 +101,52 @@ class LinuxSubmitter:
         return False
 
     def paste(self):
-        """模拟按下 Ctrl+V 粘贴内容，保持足够保持时间确保 Compositor 与应用识别"""
+        """根据当前模式模拟粘贴按键组合，保持足够按键时长确保 Compositor 与目标应用准确识别"""
         if not self.ui_kb:
             return
         time.sleep(0.015)
-        # 按下 Ctrl + V
-        self.ui_kb.write(e.EV_KEY, e.KEY_LEFTCTRL, 1)
-        self.ui_kb.syn()
-        time.sleep(0.01)
-        self.ui_kb.write(e.EV_KEY, e.KEY_V, 1)
-        self.ui_kb.syn()
-        time.sleep(0.035)  # 保持 35ms 确保 Chrome / Electron 完全捕获
-        self.ui_kb.write(e.EV_KEY, e.KEY_V, 0)
-        self.ui_kb.syn()
-        time.sleep(0.01)
-        self.ui_kb.write(e.EV_KEY, e.KEY_LEFTCTRL, 0)
-        self.ui_kb.syn()
+
+        if self.paste_mode == "terminal":
+            # 终端模式: 模拟 Ctrl + Shift + V (Linux 终端通用粘贴规范)
+            self.ui_kb.write(e.EV_KEY, e.KEY_LEFTCTRL, 1)
+            self.ui_kb.write(e.EV_KEY, e.KEY_LEFTSHIFT, 1)
+            self.ui_kb.syn()
+            time.sleep(0.01)
+            self.ui_kb.write(e.EV_KEY, e.KEY_V, 1)
+            self.ui_kb.syn()
+            time.sleep(0.035)
+            self.ui_kb.write(e.EV_KEY, e.KEY_V, 0)
+            self.ui_kb.syn()
+            time.sleep(0.01)
+            self.ui_kb.write(e.EV_KEY, e.KEY_LEFTSHIFT, 0)
+            self.ui_kb.write(e.EV_KEY, e.KEY_LEFTCTRL, 0)
+            self.ui_kb.syn()
+        elif self.paste_mode == "universal":
+            # 通用模式: 模拟 Shift + Insert (经典终端与 CUA 规范)
+            self.ui_kb.write(e.EV_KEY, e.KEY_LEFTSHIFT, 1)
+            self.ui_kb.syn()
+            time.sleep(0.01)
+            self.ui_kb.write(e.EV_KEY, e.KEY_INSERT, 1)
+            self.ui_kb.syn()
+            time.sleep(0.035)
+            self.ui_kb.write(e.EV_KEY, e.KEY_INSERT, 0)
+            self.ui_kb.syn()
+            time.sleep(0.01)
+            self.ui_kb.write(e.EV_KEY, e.KEY_LEFTSHIFT, 0)
+            self.ui_kb.syn()
+        else:
+            # 标准 GUI 模式: 模拟 Ctrl + V (Chrome / 浏览器 / 微信 / 编辑器等)
+            self.ui_kb.write(e.EV_KEY, e.KEY_LEFTCTRL, 1)
+            self.ui_kb.syn()
+            time.sleep(0.01)
+            self.ui_kb.write(e.EV_KEY, e.KEY_V, 1)
+            self.ui_kb.syn()
+            time.sleep(0.035)
+            self.ui_kb.write(e.EV_KEY, e.KEY_V, 0)
+            self.ui_kb.syn()
+            time.sleep(0.01)
+            self.ui_kb.write(e.EV_KEY, e.KEY_LEFTCTRL, 0)
+            self.ui_kb.syn()
 
     def type_diff(self, backspaces: int, delta: str):
         """

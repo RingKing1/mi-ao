@@ -81,7 +81,11 @@ class IntegratedHIDController:
         self.ui_mouse = uinput_mouse
         self.submitter = submitter
         self.running = False
-        self.mode = mode  # "typing" (默认: OK为Enter发送), "mouse" (OK为鼠标左键), "directional" (方向键)
+        self.mode = mode  # "typing" (通用GUI: Ctrl+V), "terminal" (Linux终端: Ctrl+Shift+V), "mouse" (飞鼠), "directional" (方向键)
+        if self.mode == "terminal":
+            self.submitter.set_paste_mode("terminal")
+        elif self.mode == "typing":
+            self.submitter.set_paste_mode("gui")
         self.active_direction = None
         self.direction_pressed_at = 0.0
         self.lock = threading.Lock()
@@ -118,7 +122,7 @@ class IntegratedHIDController:
             last_tick = now
 
             with self.lock:
-                if self.mode not in ("typing", "mouse") or not self.active_direction or not self.ui_mouse:
+                if self.mode not in ("typing", "terminal", "mouse") or not self.active_direction or not self.ui_mouse:
                     continue
                 held = now - self.direction_pressed_at
                 distance = self.pointer_speed(held) * delta
@@ -137,7 +141,7 @@ class IntegratedHIDController:
     def handle_direction(self, direction: str, is_down: bool):
         with self.lock:
             if is_down:
-                if self.mode in ("typing", "mouse"):
+                if self.mode in ("typing", "terminal", "mouse"):
                     self.active_direction = direction
                     self.direction_pressed_at = time.time()
                 elif self.ui_kb:
@@ -145,7 +149,7 @@ class IntegratedHIDController:
                     self.ui_kb.write(e.EV_KEY, key_map[direction], 1)
                     self.ui_kb.syn()
             else:
-                if self.mode in ("typing", "mouse"):
+                if self.mode in ("typing", "terminal", "mouse"):
                     if self.active_direction == direction:
                         self.active_direction = None
                 elif self.ui_kb:
@@ -154,14 +158,20 @@ class IntegratedHIDController:
                     self.ui_kb.syn()
 
     def cycle_mode(self):
-        modes = ["typing", "mouse", "directional"]
+        modes = ["typing", "terminal", "mouse", "directional"]
         with self.lock:
             idx = modes.index(self.mode) if self.mode in modes else 0
             self.mode = modes[(idx + 1) % len(modes)]
             self.active_direction = None
+            if self.mode == "terminal":
+                self.submitter.set_paste_mode("terminal")
+            elif self.mode == "typing":
+                self.submitter.set_paste_mode("gui")
 
         if self.mode == "typing":
-            print("[HID] 模式切换为: 【打字与确认发送模式 (TYPING)】- OK键为回车发送，方向环移动鼠标", flush=True)
+            print("[HID] 模式切换为: 【通用打字模式 (TYPING)】- OK键为回车发送，使用 Ctrl+V (适用于浏览器/网页/常用软件)", flush=True)
+        elif self.mode == "terminal":
+            print("[HID] 模式切换为: 【终端打字模式 (TERMINAL)】- OK键为回车发送，使用 Ctrl+Shift+V (专门适用于Linux终端命令行)", flush=True)
         elif self.mode == "mouse":
             print("[HID] 模式切换为: 【飞鼠点击模式 (MOUSE)】- OK键为鼠标左键，返回键为右键", flush=True)
         else:
@@ -198,7 +208,7 @@ class IntegratedHIDController:
                     elif code in DPAD_RIGHT:
                         self.handle_direction('right', is_down)
                     elif code in CENTER_KEYS:
-                        if self.mode == "typing":
+                        if self.mode in ("typing", "terminal"):
                             if is_down:
                                 print(">> [按键] 确认发送 -> 模拟按压 Enter", flush=True)
                                 self.submitter.send_enter()
@@ -241,7 +251,7 @@ class MiAoDaemon:
     STATE_OPENING      = "opening"
     STATE_STREAMING    = "streaming"
 
-    def __init__(self, model_size="small", enable_mouse=True, mode="typing"):
+    def __init__(self, model_size="small", enable_mouse=True, mode="typing", paste_mode="gui"):
         self.protocol = ATVVProtocol()
         self.state = self.STATE_DISCONNECTED
         self.stream_id = 0
@@ -274,9 +284,11 @@ class MiAoDaemon:
             print(f"[系统] 虚拟鼠标初始化失败: {err}", flush=True)
 
         # 提交器与双阶 Whisper 转写器
+        effective_paste_mode = "terminal" if mode == "terminal" else paste_mode
         self.submitter = LinuxSubmitter(
             base_dir=os.path.dirname(__file__),
-            uinput_keyboard=self.ui_kb
+            uinput_keyboard=self.ui_kb,
+            paste_mode=effective_paste_mode
         )
         self.transcriber = LocalWhisperTranscriber(model_size=model_size)
 
@@ -534,13 +546,23 @@ class MiAoDaemon:
         if self.enable_mouse and self.hid_controller:
             threading.Thread(target=self.hid_controller.start_loop, daemon=True).start()
 
-        mode_desc = "打字与确认发送模式 (OK键 = Enter发送)" if self.hid_controller and self.hid_controller.mode == "typing" else self.hid_controller.mode
+        if self.hid_controller and self.hid_controller.mode == "typing":
+            mode_desc = "通用打字与确认发送模式 (Ctrl+V, OK键 = Enter发送)"
+        elif self.hid_controller and self.hid_controller.mode == "terminal":
+            mode_desc = "终端打字与确认发送模式 (Ctrl+Shift+V, OK键 = Enter发送)"
+        elif self.hid_controller and self.hid_controller.mode == "mouse":
+            mode_desc = "飞鼠点击模式 (OK键 = 鼠标左键, 返回键 = 鼠标右键)"
+        elif self.hid_controller and self.hid_controller.mode == "directional":
+            mode_desc = "键盘方向键模式 (方向环 = 方向键, OK键 = Enter发送)"
+        else:
+            mode_desc = self.hid_controller.mode if self.hid_controller else "typing"
+
         print("==================================================", flush=True)
         print(">> 【米遥 (MI-AO) Linux 一体化守护服务启动】", flush=True)
         print(f">> - 模式：{mode_desc}", flush=True)
         print(">> - 语音：按住【语音键】说话，文字实时流式输出到打字框", flush=True)
         print(">> - 发送：松手后按遥控器【OK/确认键】，直接回车发送！", flush=True)
-        print(">> - 切换：按【TV键】可在 打字发送 / 飞鼠点击 / 方向键 间切换", flush=True)
+        print(">> - 切换：按【TV键】可在 通用打字 / 终端打字 / 飞鼠点击 / 方向键 间切换", flush=True)
         print("==================================================", flush=True)
         asyncio.run(self.run_ble())
 
@@ -549,14 +571,16 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="米遥 Linux 一体化服务")
     parser.add_argument("--model", default="small", help="终态 Whisper 模型规格 (默认: small，可选: base)")
-    parser.add_argument("--mode", default="typing", choices=["typing", "mouse", "directional"], help="初始遥控器模式 (默认: typing)")
+    parser.add_argument("--mode", default="typing", choices=["typing", "terminal", "mouse", "directional"], help="初始遥控器模式 (默认: typing, 可选: terminal, mouse, directional)")
+    parser.add_argument("--paste-mode", default="gui", choices=["gui", "terminal", "universal"], help="粘贴快捷键策略 (默认: gui [Ctrl+V], 可选: terminal [Ctrl+Shift+V], universal [Shift+Insert])")
     parser.add_argument("--no-mouse", action="store_true", help="禁用飞鼠按键控制")
     args = parser.parse_args()
 
     daemon = MiAoDaemon(
         model_size=args.model,
         enable_mouse=not args.no_mouse,
-        mode=args.mode
+        mode=args.mode,
+        paste_mode=args.paste_mode
     )
     try:
         daemon.start()
