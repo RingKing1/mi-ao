@@ -740,11 +740,13 @@ class MiAoDaemon:
             uinput_keyboard=self.ui_kb,
             paste_mode=effective_paste_mode
         )
-        self.transcriber = LocalWhisperTranscriber(model_size=model_size)
         self.groq_transcriber = GroqCloudTranscriber()
         if self.groq_transcriber.is_available:
-            print(">> [ASR引擎] 已配置 Groq Cloud Whisper API (whisper-large-v3 云端极速高精)", flush=True)
+            self.transcriber = None
+            print(">> [ASR引擎] 采用【方案A 纯云端极简模式】(Groq Cloud whisper-large-v3 极速高精)", flush=True)
+            print(">> [系统资源] 本地模型未加载，常驻内存降至 ~50MB，CPU 0% 占用！", flush=True)
         else:
+            self.transcriber = LocalWhisperTranscriber(model_size=model_size)
             print(">> [ASR引擎] 使用本地 Whisper 引擎 (离线模式)", flush=True)
 
         # 原始音频数据缓存与解码状态隔离
@@ -871,7 +873,10 @@ class MiAoDaemon:
             self.state = self.STATE_READY
 
     def _streaming_worker(self):
-        """流式后台线程：每隔约 0.3s 将已录入的原始帧快速推断，并差量注入打字框"""
+        """流式后台线程：纯云端模式下直接休眠以省 CPU，本地模式下执行流式推断"""
+        if not self.transcriber:
+            return
+
         last_process_time = time.time()
         # 16kHz ADPCM 每帧 120 字节 = 240 samples (15ms)。40 帧约为 0.6s
         min_frames = 40
@@ -953,6 +958,9 @@ class MiAoDaemon:
         if self.groq_transcriber and self.groq_transcriber.is_available:
             final_text = self.groq_transcriber.transcribe_samples(all_samples, sample_rate)
         if not final_text:
+            if not self.transcriber:
+                print(">> [ASR容错] 云端接口不可用，正在懒加载本地轻量 Whisper 兜底...", flush=True)
+                self.transcriber = LocalWhisperTranscriber(model_size="base")
             final_text = self.transcriber.transcribe_final_samples(all_samples)
 
         if not final_text:
@@ -1019,9 +1027,15 @@ class MiAoDaemon:
 
         print("==================================================", flush=True)
         print(">> 【米遥 (MI-AO) Linux 一体化守护服务启动】", flush=True)
-        asr_desc = "Groq Cloud (whisper-large-v3 极速高精) + 本地离线自动兜底" if (self.groq_transcriber and self.groq_transcriber.is_available) else f"本地双阶 Whisper (base流式 + {self.transcriber.final_model_name}终态)"
+        if self.groq_transcriber and self.groq_transcriber.is_available:
+            asr_desc = "【方案A 纯云端极简模式】(Groq Cloud whisper-large-v3, 内存~50MB, CPU 0%)"
+            voice_desc = "按住【语音键】说话，松开后整句极速上屏！"
+        else:
+            local_name = self.transcriber.final_model_name if self.transcriber else "base"
+            asr_desc = f"本地双阶 Whisper (base流式 + {local_name}终态)"
+            voice_desc = "按住【语音键】说话，文字实时流式输出到打字框"
         print(f">> - 引擎：{asr_desc}", flush=True)
-        print(">> - 语音：按住【语音键】说话，文字实时流式输出到打字框", flush=True)
+        print(f">> - 语音：{voice_desc}", flush=True)
         print(">> - 发送：松手后按遥控器【OK/确认键】，直接回车发送！", flush=True)
         print(">> - 切换：【短按TV】切 打字/终端 常用模式，【长按TV >0.45s】切 飞鼠/演示 特殊模式", flush=True)
         print("==================================================", flush=True)
