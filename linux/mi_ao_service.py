@@ -65,10 +65,10 @@ XIAOMI_PRODUCT_ID = 0x32B8
 REMOTE_NAME_KEYWORDS = ["小米", "xiaomi", "remote", "遥控器"]
 
 # 按键代码列表
-DPAD_UP = [e.KEY_UP, 103]
-DPAD_DOWN = [e.KEY_DOWN, 108]
-DPAD_LEFT = [e.KEY_LEFT, 105]
-DPAD_RIGHT = [e.KEY_RIGHT, 106]
+DPAD_UP = [e.KEY_UP, 103, e.KEY_PAGEUP, 104, 402, 177]
+DPAD_DOWN = [e.KEY_DOWN, 108, e.KEY_PAGEDOWN, 109, 403, 178]
+DPAD_LEFT = [e.KEY_LEFT, 105, 168]
+DPAD_RIGHT = [e.KEY_RIGHT, 106, 208]
 CENTER_KEYS = [e.KEY_ENTER, e.KEY_OK, e.KEY_KPENTER, e.KEY_SELECT, 28, 96, 352, 353]
 BACK_KEYS = [e.KEY_BACK, e.KEY_ESC, 158, 1]
 HOME_KEYS = [e.KEY_HOMEPAGE, e.KEY_HOME, 172, 102]
@@ -199,35 +199,38 @@ class IntegratedHIDController:
 
     def handle_direction(self, direction: str, val: int):
         with self.lock:
-            if val == 1:
-                # 按键初次按下 (Key Down)
+            if val in (1, 2):
+                # 按键按下 (val==1) 或 保持连发 (val==2)
                 if self.mode in ("typing", "mouse"):
-                    self.active_direction = direction
-                    self.direction_pressed_at = time.time()
-                elif self.ui_kb:
-                    key_map = {'up': e.KEY_UP, 'down': e.KEY_DOWN, 'left': e.KEY_LEFT, 'right': e.KEY_RIGHT}
-                    self.ui_kb.write(e.EV_KEY, key_map[direction], 1)
-                    self.ui_kb.syn()
-            elif val == 2:
-                # 按键保持按住 (Key Repeat)
-                if self.mode in ("typing", "mouse"):
-                    # 关键修复: 保持 active_direction 和原始 pressed_at 计时，切勿清空，确保长按动态平滑加速持续生效
-                    if not self.active_direction:
+                    if val == 1 or not self.active_direction:
                         self.active_direction = direction
                         self.direction_pressed_at = time.time()
                 elif self.ui_kb:
                     key_map = {'up': e.KEY_UP, 'down': e.KEY_DOWN, 'left': e.KEY_LEFT, 'right': e.KEY_RIGHT}
-                    self.ui_kb.write(e.EV_KEY, key_map[direction], 2)
-                    self.ui_kb.syn()
+                    target_key = key_map.get(direction)
+                    if target_key:
+                        if self.mode == "terminal":
+                            action_desc = {
+                                'up': '翻查上一条历史命令 (Up)',
+                                'down': '翻查下一条历史命令 (Down)',
+                                'left': '光标左移 (Left)',
+                                'right': '光标右移 (Right)'
+                            }.get(direction, direction)
+                            print(f">> [快捷键] 方向环 {direction.upper()} -> {action_desc}", flush=True)
+                        elif self.mode == "directional":
+                            action_desc = {
+                                'up': '上一页 (Up)',
+                                'down': '下一页 (Down)',
+                                'left': '左翻页 (Left)',
+                                'right': '右翻页 (Right)'
+                            }.get(direction, direction)
+                            print(f">> [快捷键] 方向环 {direction.upper()} -> {action_desc}", flush=True)
+                        self.submitter.send_key(target_key, duration=0.02)
             elif val == 0:
-                # 按键真正松开 (Key Up)
+                # 按键松开 (val==0)
                 if self.mode in ("typing", "mouse"):
                     if self.active_direction == direction:
                         self.active_direction = None
-                elif self.ui_kb:
-                    key_map = {'up': e.KEY_UP, 'down': e.KEY_DOWN, 'left': e.KEY_LEFT, 'right': e.KEY_RIGHT}
-                    self.ui_kb.write(e.EV_KEY, key_map[direction], 0)
-                    self.ui_kb.syn()
 
     def on_center_long_press(self):
         with self.lock:
