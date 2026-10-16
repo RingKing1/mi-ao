@@ -382,7 +382,9 @@ class IntegratedHIDController:
         # 1. 音量加减键 (短按单步，长按连发)
         if code in VOL_UP_KEYS:
             if is_down or is_repeat:
-                if self.mode in ("typing", "terminal"):
+                if self.mode == "terminal":
+                    self.mouse_scroll(4)
+                elif self.mode == "typing":
                     self.mouse_scroll(2)
                 elif self.mode == "mouse":
                     print(">> [快捷键] 音量+ -> 系统音量增加", flush=True)
@@ -393,7 +395,9 @@ class IntegratedHIDController:
 
         if code in VOL_DOWN_KEYS:
             if is_down or is_repeat:
-                if self.mode in ("typing", "terminal"):
+                if self.mode == "terminal":
+                    self.mouse_scroll(-4)
+                elif self.mode == "typing":
                     self.mouse_scroll(-2)
                 elif self.mode == "mouse":
                     print(">> [快捷键] 音量- -> 系统音量减小", flush=True)
