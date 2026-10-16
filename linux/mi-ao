@@ -44,9 +44,11 @@ case "$1" in
             echo "未识别"
         fi
 
-        echo -n "云端 ASR 引擎: "
-        if [ -f "$HOME/.config/mi-ao/config.json" ] && grep -q "groq_api_key" "$HOME/.config/mi-ao/config.json" 2>/dev/null; then
-            echo "已配置 Groq Cloud (whisper-large-v3, 内存~48MB, 0% CPU)"
+        echo -n "ASR 语音转写引擎: "
+        if [ -f "$HOME/.config/mi-ao/config.json" ] && grep -q "aliyun_api_key" "$HOME/.config/mi-ao/config.json" 2>/dev/null; then
+            echo "阿里云百炼 (Qwen-Audio-3.1-ASR-Flash 极速直连, 内存~48MB, 0% CPU)"
+        elif [ -f "$HOME/.config/mi-ao/config.json" ] && grep -q "groq_api_key" "$HOME/.config/mi-ao/config.json" 2>/dev/null; then
+            echo "Groq Cloud (whisper-large-v3, 内存~48MB, 0% CPU)"
         else
             echo "本地离线双阶 Whisper"
         fi

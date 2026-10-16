@@ -40,10 +40,14 @@ class GroqCloudTranscriber:
         self.prompt = prompt
         self.active_provider = "aliyun"
         self.aliyun_api_key = None
-        self.aliyun_model = "qwen3-omni-flash"
+        self.aliyun_model = "qwen-audio-3.1-asr-flash"
         self.groq_api_key = None
         self.groq_model = "whisper-large-v3"
         self.proxy_candidate = "http://127.0.0.1:7897"
+
+        # 阿里云走国内直连，关闭代理环境变量以防 socks proxy 缺失或经由外网代理导致延迟
+        self.aliyun_session = requests.Session()
+        self.aliyun_session.trust_env = False
 
         self.reload_config()
 
@@ -61,7 +65,7 @@ class GroqCloudTranscriber:
                         self.aliyun_api_key = cfg.get("aliyun_api_key") or cfg.get("dashscope_api_key")
                     if not self.groq_api_key:
                         self.groq_api_key = cfg.get("groq_api_key")
-                    self.aliyun_model = cfg.get("aliyun_model", "qwen3-omni-flash")
+                    self.aliyun_model = cfg.get("aliyun_model", "qwen-audio-3.1-asr-flash")
                     self.groq_model = cfg.get("groq_model", "whisper-large-v3")
             except Exception:
                 pass
@@ -107,55 +111,88 @@ class GroqCloudTranscriber:
         return text
 
     def _transcribe_aliyun(self, wav_bytes: bytes) -> Optional[str]:
-        """调用阿里云百炼 / DashScope 兼容接口 (qwen3-omni-flash)"""
+        """调用阿里云百炼 / DashScope 语音模型 (支持 Qwen-Audio-3.1-ASR-Flash 专有模型)"""
         if not self.aliyun_api_key:
             return None
 
         audio_b64 = base64.b64encode(wav_bytes).decode("utf-8")
-        url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.aliyun_api_key}",
             "Content-Type": "application/json"
         }
-        payload = {
-            "model": self.aliyun_model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "你是一个高精度的语音识别(ASR)转写助手。这是一段关于Linux终端、命令行、快捷键、浏览器与日常打字的中文语音。请将音频精确转写为简体中文文本，只输出转写后的文本内容，不要输出任何问候、解释或多余符号。"
-                },
-                {
-                    "role": "user",
-                    "content": [
+
+        start_t = time.time()
+        resp = None
+        try:
+            # 专有 ASR 模型 (如 qwen-audio-3.1-asr-flash, qwen3-asr-flash) 走原生 DashScope 多模态生成接口
+            if "asr-flash" in self.aliyun_model.lower():
+                url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+                payload = {
+                    "model": self.aliyun_model,
+                    "input": {
+                        "messages": [
+                            {"role": "user", "content": [{"audio": f"data:audio/wav;base64,{audio_b64}"}]}
+                        ]
+                    },
+                    "parameters": {
+                        "format": "wav",
+                        "language_hints": ["zh"]
+                    }
+                }
+                resp = self.aliyun_session.post(url, headers=headers, json=payload, timeout=6.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data.get("output", {}).get("text", "").strip()
+                    if raw_text:
+                        elapsed = time.time() - start_t
+                        cleaned = self._clean_text(raw_text)
+                        print(f">> [阿里云百炼转写完成] 耗时: {elapsed:.2f}s | 模型: {self.aliyun_model} | 结果: \"{cleaned}\"", flush=True)
+                        return cleaned
+            else:
+                # 通用兼容模式 (如 qwen3-omni-flash)
+                url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+                payload = {
+                    "model": self.aliyun_model,
+                    "messages": [
                         {
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": f"data:audio/wav;base64,{audio_b64}",
-                                "format": "wav"
-                            }
+                            "role": "system",
+                            "content": "你是一个高精度的语音识别(ASR)转写助手。请将音频精确转写为简体中文文本，只输出转写后的文本内容，不要输出任何问候、解释或多余符号。"
                         },
                         {
-                            "type": "text",
-                            "text": "请把音频中的语音精确转写为文字。"
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_audio",
+                                    "input_audio": {
+                                        "data": f"data:audio/wav;base64,{audio_b64}",
+                                        "format": "wav"
+                                    }
+                                },
+                                {
+                                    "type": "text",
+                                    "text": "转写这段语音。"
+                                }
+                            ]
                         }
                     ]
                 }
-            ]
-        }
+                resp = self.aliyun_session.post(url, headers=headers, json=payload, timeout=6.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                    if raw_text:
+                        elapsed = time.time() - start_t
+                        cleaned = self._clean_text(raw_text)
+                        print(f">> [阿里云百炼转写完成] 耗时: {elapsed:.2f}s | 模型: {self.aliyun_model} | 结果: \"{cleaned}\"", flush=True)
+                        return cleaned
 
-        start_t = time.time()
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=6.0)
-            if resp.status_code == 200:
-                data = resp.json()
-                raw_text = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                if raw_text:
-                    elapsed = time.time() - start_t
-                    cleaned = self._clean_text(raw_text)
-                    print(f">> [阿里云百炼转写完成] 耗时: {elapsed:.2f}s | 模型: {self.aliyun_model} | 结果: \"{cleaned}\"", flush=True)
-                    return cleaned
-            elif resp.status_code in (401, 403):
-                print(f">> [阿里云认证失败] HTTP {resp.status_code}: 请检查 DASHSCOPE_API_KEY", flush=True)
+            if resp is not None:
+                if resp.status_code == 400 and "NO_WORDS" in resp.text:
+                    return ""
+                elif resp.status_code in (401, 403):
+                    print(f">> [阿里云认证失败] HTTP {resp.status_code}: 请检查 DASHSCOPE_API_KEY", flush=True)
+                elif resp.status_code != 200:
+                    print(f">> [阿里云返回错误] HTTP {resp.status_code}: {resp.text[:150]}", flush=True)
         except Exception as e:
             print(f">> [阿里云转写异常] {e}", flush=True)
         return None
@@ -198,6 +235,7 @@ class GroqCloudTranscriber:
                         cleaned = self._clean_text(raw_text)
                         print(f">> [Groq云端转写完成] 耗时: {elapsed:.2f}s | 模型: {self.groq_model} | 结果: \"{cleaned}\"", flush=True)
                         return cleaned
+                    return ""
                 elif resp.status_code in (401, 403):
                     print(f">> [Groq认证失败] HTTP {resp.status_code}: 请检查 GROQ_API_KEY", flush=True)
                     return None
@@ -215,20 +253,20 @@ class GroqCloudTranscriber:
         # 1. 优先调用主力线路
         if self.active_provider == "aliyun" and self.aliyun_api_key:
             res = self._transcribe_aliyun(wav_bytes)
-            if res:
+            if res is not None:
                 return res
             print(">> [ASR自动容灾] 阿里云百炼线路无响应，0.05s 无缝切至备用线路 Groq Cloud...", flush=True)
 
         if self.groq_api_key:
             res = self._transcribe_groq(wav_bytes)
-            if res:
+            if res is not None:
                 return res
 
         # 2. 若主力不是 aliyun 但 groq 失败，回退 aliyun
         if self.active_provider != "aliyun" and self.aliyun_api_key:
             print(">> [ASR自动容灾] Groq Cloud 线路无响应，0.05s 无缝切至备用线路 阿里云百炼...", flush=True)
             res = self._transcribe_aliyun(wav_bytes)
-            if res:
+            if res is not None:
                 return res
 
         return None
