@@ -70,12 +70,14 @@ DPAD_RIGHT = [e.KEY_RIGHT, 106]
 CENTER_KEYS = [e.KEY_ENTER, e.KEY_OK, e.KEY_KPENTER, e.KEY_SELECT, 28, 96, 352, 353]
 BACK_KEYS = [e.KEY_BACK, e.KEY_ESC, 158, 1]
 HOME_KEYS = [e.KEY_HOMEPAGE, e.KEY_HOME, 172, 102]
+MENU_KEYS = [e.KEY_MENU, e.KEY_COMPOSE, e.KEY_PROPS, 139, 127, 130]
 VOL_UP_KEYS = [e.KEY_VOLUMEUP, 115]
 VOL_DOWN_KEYS = [e.KEY_VOLUMEDOWN, 114]
 TV_KEYS = [e.KEY_TV, e.KEY_PROG1, e.KEY_GRAVE, 377, 148, 41]
+POWER_KEYS = [e.KEY_POWER, e.KEY_SLEEP, 116, 142]
 
 class IntegratedHIDController:
-    """HID 独占飞鼠手柄与快捷控制控制器"""
+    """HID 独占飞鼠手柄与全能快捷按键控制器"""
     def __init__(self, uinput_keyboard: Optional[UInput], uinput_mouse: Optional[UInput], submitter: LinuxSubmitter, mode: str = "typing"):
         self.ui_kb = uinput_keyboard
         self.ui_mouse = uinput_mouse
@@ -90,6 +92,48 @@ class IntegratedHIDController:
         self.direction_pressed_at = 0.0
         self.lock = threading.Lock()
         self.remote_dev = None
+
+        # 快捷键长按与双击状态跟踪
+        self.key_timers = {}
+        self.long_press_triggered = set()
+        self.last_home_click = 0.0
+        self.home_single_timer = None
+
+    def cancel_all_timers(self):
+        with self.lock:
+            for t in list(self.key_timers.values()):
+                try:
+                    t.cancel()
+                except Exception:
+                    pass
+            self.key_timers.clear()
+            if self.home_single_timer:
+                try:
+                    self.home_single_timer.cancel()
+                except Exception:
+                    pass
+                self.home_single_timer = None
+            self.long_press_triggered.clear()
+
+    def mouse_click(self, btn: int = e.BTN_LEFT):
+        if not self.ui_mouse:
+            return
+        self.ui_mouse.write(e.EV_KEY, btn, 1)
+        self.ui_mouse.syn()
+        time.sleep(0.02)
+        self.ui_mouse.write(e.EV_KEY, btn, 0)
+        self.ui_mouse.syn()
+
+    def mouse_double_click(self, btn: int = e.BTN_LEFT):
+        self.mouse_click(btn)
+        time.sleep(0.08)
+        self.mouse_click(btn)
+
+    def mouse_scroll(self, steps: int):
+        if not self.ui_mouse:
+            return
+        self.ui_mouse.write(e.EV_REL, e.REL_WHEEL, steps)
+        self.ui_mouse.syn()
 
     def find_hid_device(self) -> Optional[InputDevice]:
         for path in sorted(glob.glob("/dev/input/event*")):
@@ -122,7 +166,7 @@ class IntegratedHIDController:
             last_tick = now
 
             with self.lock:
-                if self.mode not in ("typing", "terminal", "mouse") or not self.active_direction or not self.ui_mouse:
+                if self.mode not in ("typing", "mouse") or not self.active_direction or not self.ui_mouse:
                     continue
                 held = now - self.direction_pressed_at
                 distance = self.pointer_speed(held) * delta
@@ -141,7 +185,7 @@ class IntegratedHIDController:
     def handle_direction(self, direction: str, is_down: bool):
         with self.lock:
             if is_down:
-                if self.mode in ("typing", "terminal", "mouse"):
+                if self.mode in ("typing", "mouse"):
                     self.active_direction = direction
                     self.direction_pressed_at = time.time()
                 elif self.ui_kb:
@@ -149,13 +193,260 @@ class IntegratedHIDController:
                     self.ui_kb.write(e.EV_KEY, key_map[direction], 1)
                     self.ui_kb.syn()
             else:
-                if self.mode in ("typing", "terminal", "mouse"):
+                if self.mode in ("typing", "mouse"):
                     if self.active_direction == direction:
                         self.active_direction = None
                 elif self.ui_kb:
                     key_map = {'up': e.KEY_UP, 'down': e.KEY_DOWN, 'left': e.KEY_LEFT, 'right': e.KEY_RIGHT}
                     self.ui_kb.write(e.EV_KEY, key_map[direction], 0)
                     self.ui_kb.syn()
+
+    def on_center_long_press(self):
+        with self.lock:
+            self.long_press_triggered.add("center")
+        if self.mode == "typing":
+            print(">> [快捷键] OK 长按 (>0.45s) -> 换行不发送 (Shift+Enter)", flush=True)
+            self.submitter.send_shift_enter()
+        elif self.mode == "terminal":
+            print(">> [快捷键] OK 长按 (>0.45s) -> 终端中断任务 (Ctrl+C)", flush=True)
+            self.submitter.send_ctrl_c()
+        elif self.mode == "mouse":
+            print(">> [快捷键] OK 长按 (>0.45s) -> 鼠标左键双击", flush=True)
+            self.mouse_double_click(e.BTN_LEFT)
+        else:
+            print(">> [快捷键] OK 长按 (>0.45s) -> 回车 (Enter)", flush=True)
+            self.submitter.send_enter()
+
+    def on_back_long_press(self):
+        with self.lock:
+            self.long_press_triggered.add("back")
+        if self.mode == "typing":
+            print(">> [快捷键] 返回 长按 (>0.45s) -> 撤销上次输入 (Ctrl+Z)", flush=True)
+            self.submitter.send_ctrl_z()
+        elif self.mode == "terminal":
+            print(">> [快捷键] 返回 长按 (>0.45s) -> 清空整行命令 (Ctrl+U)", flush=True)
+            self.submitter.send_ctrl_u()
+        elif self.mode == "mouse":
+            print(">> [快捷键] 返回 长按 (>0.45s) -> 鼠标右键", flush=True)
+            self.mouse_click(e.BTN_RIGHT)
+        else:
+            print(">> [快捷键] 返回 长按 (>0.45s) -> 退出放映 (ESC)", flush=True)
+            self.submitter.send_esc()
+
+    def on_menu_long_press(self):
+        with self.lock:
+            self.long_press_triggered.add("menu")
+        if self.mode == "typing":
+            print(">> [快捷键] 菜单 长按 (>0.45s) -> 全选内容 (Ctrl+A)", flush=True)
+            self.submitter.send_ctrl_a()
+        elif self.mode == "terminal":
+            print(">> [快捷键] 菜单 长按 (>0.45s) -> 终端历史反向搜索 (Ctrl+R)", flush=True)
+            self.submitter.send_ctrl_r()
+        elif self.mode == "mouse":
+            print(">> [快捷键] 菜单 长按 (>0.45s) -> 鼠标中键点击", flush=True)
+            self.mouse_click(e.BTN_MIDDLE)
+        else:
+            print(">> [快捷键] 菜单 长按 (>0.45s) -> 全屏切换 (F11)", flush=True)
+            self.submitter.send_f11()
+
+    def on_power_long_press(self):
+        with self.lock:
+            self.long_press_triggered.add("power")
+        print(">> [快捷键] 电源 长按 (>0.6s) -> 锁定屏幕 (Super+L)", flush=True)
+        self.submitter.send_combo(e.KEY_LEFTMETA, e.KEY_L)
+
+    def on_home_single_click(self):
+        if self.mode == "typing":
+            print(">> [快捷键] HOME 单击 -> 快速切换应用窗口 (Alt+Tab)", flush=True)
+            self.submitter.send_alt_tab()
+        elif self.mode == "terminal":
+            print(">> [快捷键] HOME 单击 -> 终端一键清屏 (Ctrl+L)", flush=True)
+            self.submitter.send_ctrl_l()
+        elif self.mode == "mouse":
+            print(">> [快捷键] HOME 单击 -> 显示桌面 (Super+D)", flush=True)
+            self.submitter.send_super_d()
+        else:
+            print(">> [快捷键] HOME 单击 -> PPT 从头放映 (F5)", flush=True)
+            self.submitter.send_f5()
+
+    def on_home_double_click(self):
+        if self.mode == "terminal":
+            print(">> [快捷键] HOME 双击 -> 新建终端标签页 (Ctrl+Shift+T)", flush=True)
+            self.submitter.send_new_terminal_tab()
+        elif self.mode in ("typing", "mouse"):
+            print(">> [快捷键] HOME 双击 -> 显示桌面 (Super+D)", flush=True)
+            self.submitter.send_super_d()
+        else:
+            print(">> [快捷键] HOME 双击 -> PPT 从当前页放映 (Shift+F5)", flush=True)
+            self.submitter.send_shift_f5()
+
+    def handle_action_key(self, code: int, val: int):
+        is_down = (val == 1)
+        is_up = (val == 0)
+        is_repeat = (val == 2)
+
+        # 1. 音量加减键 (短按单步，长按连发)
+        if code in VOL_UP_KEYS:
+            if is_down or is_repeat:
+                if self.mode == "typing":
+                    self.mouse_scroll(2)
+                elif self.mode == "terminal":
+                    print(">> [快捷键] 音量+ -> 终端向上翻屏 (Shift+PageUp)", flush=True)
+                    self.submitter.send_shift_page_up()
+                elif self.mode == "mouse":
+                    print(">> [快捷键] 音量+ -> 系统音量增加", flush=True)
+                    self.submitter.send_key(e.KEY_VOLUMEUP)
+                else:
+                    self.submitter.send_page_up()
+            return
+
+        if code in VOL_DOWN_KEYS:
+            if is_down or is_repeat:
+                if self.mode == "typing":
+                    self.mouse_scroll(-2)
+                elif self.mode == "terminal":
+                    print(">> [快捷键] 音量- -> 终端向下翻屏 (Shift+PageDown)", flush=True)
+                    self.submitter.send_shift_page_down()
+                elif self.mode == "mouse":
+                    print(">> [快捷键] 音量- -> 系统音量减小", flush=True)
+                    self.submitter.send_key(e.KEY_VOLUMEDOWN)
+                else:
+                    self.submitter.send_page_down()
+            return
+
+        # 2. TV 模式切换键
+        if code in TV_KEYS:
+            if is_down:
+                self.cycle_mode()
+            return
+
+        # 3. CENTER 确认键 (短按发送/执行, 长按换行/中断)
+        if code in CENTER_KEYS:
+            if is_down:
+                with self.lock:
+                    if "center" in self.key_timers:
+                        self.key_timers["center"].cancel()
+                    t = threading.Timer(0.45, self.on_center_long_press)
+                    self.key_timers["center"] = t
+                    t.start()
+            elif is_up:
+                with self.lock:
+                    t = self.key_timers.pop("center", None)
+                    if t: t.cancel()
+                    was_long = "center" in self.long_press_triggered
+                    if was_long:
+                        self.long_press_triggered.remove("center")
+                if not was_long:
+                    if self.mode == "typing":
+                        print(">> [快捷键] OK 短按 -> 回车发送 (Enter)", flush=True)
+                        self.submitter.send_enter()
+                    elif self.mode == "terminal":
+                        print(">> [快捷键] OK 短按 -> 执行命令 (Enter)", flush=True)
+                        self.submitter.send_enter()
+                    elif self.mode == "mouse":
+                        print(">> [快捷键] OK 短按 -> 鼠标左键点击", flush=True)
+                        self.mouse_click(e.BTN_LEFT)
+                    else:
+                        print(">> [快捷键] OK 短按 -> 下一页 (Space)", flush=True)
+                        self.submitter.send_space()
+            return
+
+        # 4. BACK 返回键 (短按ESC, 长按撤销/清行)
+        if code in BACK_KEYS:
+            if is_down:
+                with self.lock:
+                    if "back" in self.key_timers:
+                        self.key_timers["back"].cancel()
+                    t = threading.Timer(0.45, self.on_back_long_press)
+                    self.key_timers["back"] = t
+                    t.start()
+            elif is_up:
+                with self.lock:
+                    t = self.key_timers.pop("back", None)
+                    if t: t.cancel()
+                    was_long = "back" in self.long_press_triggered
+                    if was_long:
+                        self.long_press_triggered.remove("back")
+                if not was_long:
+                    if self.mode == "mouse":
+                        print(">> [快捷键] 返回 短按 -> 鼠标右键", flush=True)
+                        self.mouse_click(e.BTN_RIGHT)
+                    else:
+                        print(">> [快捷键] 返回 短按 -> 取消 / ESC", flush=True)
+                        self.submitter.send_esc()
+            return
+
+        # 5. HOME 主页键 (单击清屏/切应用, 双击新建标签/桌面)
+        if code in HOME_KEYS:
+            if is_up:
+                now = time.time()
+                with self.lock:
+                    if now - self.last_home_click < 0.28:
+                        if self.home_single_timer:
+                            self.home_single_timer.cancel()
+                            self.home_single_timer = None
+                        self.last_home_click = 0.0
+                        is_double = True
+                    else:
+                        self.last_home_click = now
+                        self.home_single_timer = threading.Timer(0.28, self.on_home_single_click)
+                        self.home_single_timer.start()
+                        is_double = False
+                if is_double:
+                    self.on_home_double_click()
+            return
+
+        # 6. MENU 菜单键 (短按补全/右键, 长按反向搜索/全选)
+        if code in MENU_KEYS:
+            if is_down:
+                with self.lock:
+                    if "menu" in self.key_timers:
+                        self.key_timers["menu"].cancel()
+                    t = threading.Timer(0.45, self.on_menu_long_press)
+                    self.key_timers["menu"] = t
+                    t.start()
+            elif is_up:
+                with self.lock:
+                    t = self.key_timers.pop("menu", None)
+                    if t: t.cancel()
+                    was_long = "menu" in self.long_press_triggered
+                    if was_long:
+                        self.long_press_triggered.remove("menu")
+                if not was_long:
+                    if self.mode == "typing":
+                        print(">> [快捷键] 菜单 短按 -> 鼠标右键菜单", flush=True)
+                        self.mouse_click(e.BTN_RIGHT)
+                    elif self.mode == "terminal":
+                        print(">> [快捷键] 菜单 短按 -> 命令/路径补全 (Tab)", flush=True)
+                        self.submitter.send_tab()
+                    elif self.mode == "mouse":
+                        print(">> [快捷键] 菜单 短按 -> 鼠标中键点击", flush=True)
+                        self.mouse_click(e.BTN_MIDDLE)
+                    else:
+                        print(">> [快捷键] 菜单 短按 -> 全屏切换 (F11)", flush=True)
+                        self.submitter.send_f11()
+            return
+
+        # 7. POWER 电源键 (短按启动器, 长按锁屏)
+        if code in POWER_KEYS:
+            if is_down:
+                with self.lock:
+                    if "power" in self.key_timers:
+                        self.key_timers["power"].cancel()
+                    t = threading.Timer(0.60, self.on_power_long_press)
+                    self.key_timers["power"] = t
+                    t.start()
+            elif is_up:
+                with self.lock:
+                    t = self.key_timers.pop("power", None)
+                    if t: t.cancel()
+                    was_long = "power" in self.long_press_triggered
+                    if was_long:
+                        self.long_press_triggered.remove("power")
+                if not was_long:
+                    print(">> [快捷键] 电源 短按 -> 呼出应用搜索 (Super)", flush=True)
+                    self.submitter.send_super_key()
+            return
 
     def cycle_mode(self):
         modes = ["typing", "terminal", "mouse", "directional"]
@@ -169,13 +460,13 @@ class IntegratedHIDController:
                 self.submitter.set_paste_mode("gui")
 
         if self.mode == "typing":
-            print("[HID] 模式切换为: 【通用打字模式 (TYPING)】- OK键为回车发送，使用 Ctrl+V (适用于浏览器/网页/常用软件)", flush=True)
+            print("[HID] 模式切换为: 【通用打字模式 (TYPING)】- OK发消息/长按换行，方向环移动鼠标", flush=True)
         elif self.mode == "terminal":
-            print("[HID] 模式切换为: 【终端打字模式 (TERMINAL)】- OK键为回车发送，使用 Ctrl+Shift+V (专门适用于Linux终端命令行)", flush=True)
+            print("[HID] 模式切换为: 【终端命令行模式 (TERMINAL)】- OK执行/长按Ctrl+C，方向环翻历史命令", flush=True)
         elif self.mode == "mouse":
-            print("[HID] 模式切换为: 【飞鼠点击模式 (MOUSE)】- OK键为鼠标左键，返回键为右键", flush=True)
+            print("[HID] 模式切换为: 【无线飞鼠模式 (MOUSE)】- OK左键/长按双击，返回右键，音量调系统声", flush=True)
         else:
-            print("[HID] 模式切换为: 【键盘方向键模式 (DIRECTIONAL)】- 方向环为方向键，OK键为回车", flush=True)
+            print("[HID] 模式切换为: 【演讲演示模式 (DIRECTIONAL)】- 方向环翻页，OK下一页(空格)，HOME放映(F5)", flush=True)
 
     def start_loop(self):
         self.running = True
@@ -207,36 +498,12 @@ class IntegratedHIDController:
                         self.handle_direction('left', is_down)
                     elif code in DPAD_RIGHT:
                         self.handle_direction('right', is_down)
-                    elif code in CENTER_KEYS:
-                        if self.mode in ("typing", "terminal"):
-                            if is_down:
-                                print(">> [按键] 确认发送 -> 模拟按压 Enter", flush=True)
-                                self.submitter.send_enter()
-                        elif self.mode == "mouse" and self.ui_mouse:
-                            self.ui_mouse.write(e.EV_KEY, e.BTN_LEFT, 1 if is_down else 0)
-                            self.ui_mouse.syn()
-                        else:
-                            if is_down:
-                                self.submitter.send_enter()
-                    elif code in BACK_KEYS:
-                        if self.mode == "mouse" and self.ui_mouse:
-                            self.ui_mouse.write(e.EV_KEY, e.BTN_RIGHT, 1 if is_down else 0)
-                            self.ui_mouse.syn()
-                        else:
-                            if is_down:
-                                print(">> [按键] 取消 / 返回 -> 模拟按压 ESC", flush=True)
-                                self.submitter.send_esc()
-                    elif code in VOL_UP_KEYS and is_down and self.ui_mouse:
-                        self.ui_mouse.write(e.EV_REL, e.REL_WHEEL, 1)
-                        self.ui_mouse.syn()
-                    elif code in VOL_DOWN_KEYS and is_down and self.ui_mouse:
-                        self.ui_mouse.write(e.EV_REL, e.REL_WHEEL, -1)
-                        self.ui_mouse.syn()
-                    elif code in TV_KEYS and is_down:
-                        self.cycle_mode()
+                    else:
+                        self.handle_action_key(code, val)
             except Exception as err:
                 print(f"[HID] 连接断开或异常: {err}", flush=True)
             finally:
+                self.cancel_all_timers()
                 try:
                     dev.ungrab()
                 except Exception:

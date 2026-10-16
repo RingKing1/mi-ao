@@ -173,25 +173,120 @@ class LinuxSubmitter:
                 time.sleep(0.02)  # 给系统剪贴板 20ms 建立通知
                 self.paste()
 
-    def send_enter(self):
-        """模拟按下 Enter 回车键 (用于确认发送)"""
+    def send_key(self, keycode: int, duration: float = 0.035):
+        """发送单键按下与释放"""
         if not self.ui_kb:
             return
-        self.ui_kb.write(e.EV_KEY, e.KEY_ENTER, 1)
+        self.ui_kb.write(e.EV_KEY, keycode, 1)
         self.ui_kb.syn()
-        time.sleep(0.035)
-        self.ui_kb.write(e.EV_KEY, e.KEY_ENTER, 0)
+        time.sleep(duration)
+        self.ui_kb.write(e.EV_KEY, keycode, 0)
         self.ui_kb.syn()
 
-    def send_esc(self):
-        """模拟按下 ESC 键 (用于取消)"""
-        if not self.ui_kb:
+    def send_combo(self, *keycodes: int, duration: float = 0.035):
+        """
+        发送组合键（按顺序依次按下所有修饰键与主键，随后按相反顺序依次释放）
+        例如: send_combo(e.KEY_LEFTCTRL, e.KEY_C)
+        """
+        if not self.ui_kb or not keycodes:
             return
-        self.ui_kb.write(e.EV_KEY, e.KEY_ESC, 1)
-        self.ui_kb.syn()
-        time.sleep(0.035)
-        self.ui_kb.write(e.EV_KEY, e.KEY_ESC, 0)
-        self.ui_kb.syn()
+        for kc in keycodes:
+            self.ui_kb.write(e.EV_KEY, kc, 1)
+            self.ui_kb.syn()
+            time.sleep(0.01)
+        time.sleep(duration)
+        for kc in reversed(keycodes):
+            self.ui_kb.write(e.EV_KEY, kc, 0)
+            self.ui_kb.syn()
+            time.sleep(0.005)
+
+    def send_enter(self):
+        """模拟按下 Enter 回车键 (用于确认发送/执行命令)"""
+        self.send_key(e.KEY_ENTER)
+
+    def send_shift_enter(self):
+        """模拟按下 Shift + Enter (换行不发送，适用于ChatGPT/微信/聊天框)"""
+        self.send_combo(e.KEY_LEFTSHIFT, e.KEY_ENTER)
+
+    def send_esc(self):
+        """模拟按下 ESC 键 (用于取消/退出全屏/Vim常规模式)"""
+        self.send_key(e.KEY_ESC)
+
+    def send_ctrl_c(self):
+        """模拟按下 Ctrl + C (终端中断当前命令/终止任务)"""
+        self.send_combo(e.KEY_LEFTCTRL, e.KEY_C)
+
+    def send_ctrl_u(self):
+        """模拟按下 Ctrl + U (终端清空整行命令)"""
+        self.send_combo(e.KEY_LEFTCTRL, e.KEY_U)
+
+    def send_ctrl_l(self):
+        """模拟按下 Ctrl + L (终端一键清屏)"""
+        self.send_combo(e.KEY_LEFTCTRL, e.KEY_L)
+
+    def send_ctrl_z(self):
+        """模拟按下 Ctrl + Z (撤销上次输入)"""
+        self.send_combo(e.KEY_LEFTCTRL, e.KEY_Z)
+
+    def send_ctrl_a(self):
+        """模拟按下 Ctrl + A (全选当前输入框内容)"""
+        self.send_combo(e.KEY_LEFTCTRL, e.KEY_A)
+
+    def send_ctrl_r(self):
+        """模拟按下 Ctrl + R (终端反向历史搜索)"""
+        self.send_combo(e.KEY_LEFTCTRL, e.KEY_R)
+
+    def send_alt_tab(self):
+        """模拟按下 Alt + Tab (快速切换前台应用)"""
+        self.send_combo(e.KEY_LEFTALT, e.KEY_TAB, duration=0.05)
+
+    def send_super_d(self):
+        """模拟按下 Super + D (快速回到桌面/最小化所有窗口)"""
+        self.send_combo(e.KEY_LEFTMETA, e.KEY_D)
+
+    def send_super_key(self):
+        """模拟按下 Super 键 (呼出应用启动器 / GNOME 搜索)"""
+        self.send_key(e.KEY_LEFTMETA)
+
+    def send_tab(self):
+        """模拟按下 Tab 键 (命令行自动补全 / 表单跳格)"""
+        self.send_key(e.KEY_TAB)
+
+    def send_space(self):
+        """模拟按下 Space 空格键 (PPT 下一页 / 视频暂停)"""
+        self.send_key(e.KEY_SPACE)
+
+    def send_page_up(self):
+        """模拟按下 PageUp (向上翻页)"""
+        self.send_key(e.KEY_PAGEUP)
+
+    def send_page_down(self):
+        """模拟按下 PageDown (向下翻页)"""
+        self.send_key(e.KEY_PAGEDOWN)
+
+    def send_shift_page_up(self):
+        """模拟按下 Shift + PageUp (终端缓冲区向上翻屏)"""
+        self.send_combo(e.KEY_LEFTSHIFT, e.KEY_PAGEUP)
+
+    def send_shift_page_down(self):
+        """模拟按下 Shift + PageDown (终端缓冲区向下翻屏)"""
+        self.send_combo(e.KEY_LEFTSHIFT, e.KEY_PAGEDOWN)
+
+    def send_new_terminal_tab(self):
+        """模拟按下 Ctrl + Shift + T (终端新建标签页)"""
+        self.send_combo(e.KEY_LEFTCTRL, e.KEY_LEFTSHIFT, e.KEY_T)
+
+    def send_f5(self):
+        """模拟按下 F5 (PPT 从头放映 / 网页刷新)"""
+        self.send_key(e.KEY_F5)
+
+    def send_shift_f5(self):
+        """模拟按下 Shift + F5 (PPT 从当前页放映)"""
+        self.send_combo(e.KEY_LEFTSHIFT, e.KEY_F5)
+
+    def send_f11(self):
+        """模拟按下 F11 (全屏切换)"""
+        self.send_key(e.KEY_F11)
 
     def record_submission(self, text: str, audio_path: str = None) -> dict:
         """归档最终识别文本并保存到历史与剪贴板"""
