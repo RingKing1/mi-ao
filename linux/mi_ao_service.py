@@ -2,8 +2,14 @@
 """
 米遥 (MI-AO) Linux 核心整合守护服务
 同时集成两大核心链路：
-1. BLE 语音链路：按住遥控器语音键说话，松手 0.3s 本地 Whisper 极速转写，写入剪贴板与历史记录
-2. HID 飞鼠手柄：独占遥控器按键，方向环平滑移动鼠标、OK 为左键、Back 为右键、音量为滚轮、TV 切换模式
+1. BLE 实时语音打字链路：
+   - 按住语音键说话：以 ~0.2s 延迟在当前打字框内实时逐字流式涌现，松手终态精准校准。
+2. HID 飞鼠与快捷控制链路：
+   - 默认【实时打字与确认发送模式】：
+     * OK / 确认键：模拟 Enter 回车，一键发送打字框内容！
+     * 方向环：平滑移动鼠标指针（按住平滑加速）
+     * 返回键：ESC 取消
+     * TV 键：在【打字与确认发送】、【飞鼠点击】与【键盘方向键】模式之间切换
 """
 
 import os
@@ -13,6 +19,14 @@ import glob
 import asyncio
 import threading
 from datetime import datetime
+from typing import Optional
+
+# 确保所有终端输出即时刷新到 systemd journal 日志
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
 
 # 兼容加载用户环境包
 for user in [os.environ.get("SUDO_USER"), os.environ.get("USER"), "nvidia"]:
@@ -21,7 +35,7 @@ for user in [os.environ.get("SUDO_USER"), os.environ.get("USER"), "nvidia"]:
         if os.path.isdir(user_site) and user_site not in sys.path:
             sys.path.insert(0, user_site)
 
-# 清理失效环境变量
+# 清理可能干扰 HuggingFace 的失效环境变量
 for k in ["ALL_PROXY", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]:
     os.environ.pop(k, None)
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
@@ -30,14 +44,14 @@ try:
     from bleak import BleakClient
     from bleak.backends.device import BLEDevice
 except ImportError:
-    print("错误: 未安装 bleak 库")
+    print("错误: 未安装 bleak 库。请运行: python3 -m pip install bleak", flush=True)
     sys.exit(1)
 
 try:
     import evdev
     from evdev import InputDevice, UInput, ecodes as e
 except ImportError:
-    print("错误: 未安装 evdev 库")
+    print("错误: 未安装 evdev 库。请运行: python3 -m pip install evdev", flush=True)
     sys.exit(1)
 
 from atvv_protocol import ATVVProtocol, AudioPipeline
@@ -49,29 +63,31 @@ XIAOMI_PRODUCT_ID = 0x32B8
 REMOTE_NAME_KEYWORDS = ["小米", "xiaomi", "remote", "遥控器"]
 
 # 按键代码列表
-DPAD_UP = [e.KEY_UP]
-DPAD_DOWN = [e.KEY_DOWN]
-DPAD_LEFT = [e.KEY_LEFT]
-DPAD_RIGHT = [e.KEY_RIGHT]
-CENTER_KEYS = [e.KEY_ENTER, e.KEY_OK, 28, 352]
+DPAD_UP = [e.KEY_UP, 103]
+DPAD_DOWN = [e.KEY_DOWN, 108]
+DPAD_LEFT = [e.KEY_LEFT, 105]
+DPAD_RIGHT = [e.KEY_RIGHT, 106]
+CENTER_KEYS = [e.KEY_ENTER, e.KEY_OK, e.KEY_KPENTER, e.KEY_SELECT, 28, 96, 352, 353]
 BACK_KEYS = [e.KEY_BACK, e.KEY_ESC, 158, 1]
 HOME_KEYS = [e.KEY_HOMEPAGE, e.KEY_HOME, 172, 102]
 VOL_UP_KEYS = [e.KEY_VOLUMEUP, 115]
 VOL_DOWN_KEYS = [e.KEY_VOLUMEDOWN, 114]
-TV_KEYS = [e.KEY_TV, e.KEY_PROG1, 377, 148]
+TV_KEYS = [e.KEY_TV, e.KEY_PROG1, e.KEY_GRAVE, 377, 148, 41]
 
 class IntegratedHIDController:
-    """HID 独占飞鼠手柄控制器"""
-    def __init__(self, uinput_dev: UInput):
-        self.ui = uinput_dev
+    """HID 独占飞鼠手柄与快捷控制控制器"""
+    def __init__(self, uinput_keyboard: Optional[UInput], uinput_mouse: Optional[UInput], submitter: LinuxSubmitter, mode: str = "typing"):
+        self.ui_kb = uinput_keyboard
+        self.ui_mouse = uinput_mouse
+        self.submitter = submitter
         self.running = False
-        self.mode = "pointer"
+        self.mode = mode  # "typing" (默认: OK为Enter发送), "mouse" (OK为鼠标左键), "directional" (方向键)
         self.active_direction = None
         self.direction_pressed_at = 0.0
         self.lock = threading.Lock()
         self.remote_dev = None
 
-    def find_hid_device(self) -> InputDevice:
+    def find_hid_device(self) -> Optional[InputDevice]:
         for path in sorted(glob.glob("/dev/input/event*")):
             try:
                 d = InputDevice(path)
@@ -102,7 +118,7 @@ class IntegratedHIDController:
             last_tick = now
 
             with self.lock:
-                if self.mode != "pointer" or not self.active_direction or not self.ui:
+                if self.mode not in ("typing", "mouse") or not self.active_direction or not self.ui_mouse:
                     continue
                 held = now - self.direction_pressed_at
                 distance = self.pointer_speed(held) * delta
@@ -114,28 +130,42 @@ class IntegratedHIDController:
                 elif self.active_direction == 'right': dx = int(distance)
 
                 if dx != 0 or dy != 0:
-                    if dx != 0: self.ui.write(e.EV_REL, e.REL_X, dx)
-                    if dy != 0: self.ui.write(e.EV_REL, e.REL_Y, dy)
-                    self.ui.syn()
+                    if dx != 0: self.ui_mouse.write(e.EV_REL, e.REL_X, dx)
+                    if dy != 0: self.ui_mouse.write(e.EV_REL, e.REL_Y, dy)
+                    self.ui_mouse.syn()
 
     def handle_direction(self, direction: str, is_down: bool):
         with self.lock:
             if is_down:
-                if self.mode == "pointer":
+                if self.mode in ("typing", "mouse"):
                     self.active_direction = direction
                     self.direction_pressed_at = time.time()
-                elif self.ui:
+                elif self.ui_kb:
                     key_map = {'up': e.KEY_UP, 'down': e.KEY_DOWN, 'left': e.KEY_LEFT, 'right': e.KEY_RIGHT}
-                    self.ui.write(e.EV_KEY, key_map[direction], 1)
-                    self.ui.syn()
+                    self.ui_kb.write(e.EV_KEY, key_map[direction], 1)
+                    self.ui_kb.syn()
             else:
-                if self.mode == "pointer":
+                if self.mode in ("typing", "mouse"):
                     if self.active_direction == direction:
                         self.active_direction = None
-                elif self.ui:
+                elif self.ui_kb:
                     key_map = {'up': e.KEY_UP, 'down': e.KEY_DOWN, 'left': e.KEY_LEFT, 'right': e.KEY_RIGHT}
-                    self.ui.write(e.EV_KEY, key_map[direction], 0)
-                    self.ui.syn()
+                    self.ui_kb.write(e.EV_KEY, key_map[direction], 0)
+                    self.ui_kb.syn()
+
+    def cycle_mode(self):
+        modes = ["typing", "mouse", "directional"]
+        with self.lock:
+            idx = modes.index(self.mode) if self.mode in modes else 0
+            self.mode = modes[(idx + 1) % len(modes)]
+            self.active_direction = None
+
+        if self.mode == "typing":
+            print("[HID] 模式切换为: 【打字与确认发送模式 (TYPING)】- OK键为回车发送，方向环移动鼠标", flush=True)
+        elif self.mode == "mouse":
+            print("[HID] 模式切换为: 【飞鼠点击模式 (MOUSE)】- OK键为鼠标左键，返回键为右键", flush=True)
+        else:
+            print("[HID] 模式切换为: 【键盘方向键模式 (DIRECTIONAL)】- 方向环为方向键，OK键为回车", flush=True)
 
     def start_loop(self):
         self.running = True
@@ -150,7 +180,7 @@ class IntegratedHIDController:
             self.remote_dev = dev
             try:
                 dev.grab()
-                print(f"[HID] 已独占遥控器按键外设: {dev.name} ({dev.path})")
+                print(f"[HID] 已独占遥控器按键外设: {dev.name} ({dev.path})", flush=True)
                 for event in dev.read_loop():
                     if not self.running:
                         break
@@ -158,7 +188,6 @@ class IntegratedHIDController:
                         continue
                     code, val = event.code, event.value
                     is_down = (val == 1)
-                    is_up = (val == 0)
 
                     if code in DPAD_UP:
                         self.handle_direction('up', is_down)
@@ -168,31 +197,35 @@ class IntegratedHIDController:
                         self.handle_direction('left', is_down)
                     elif code in DPAD_RIGHT:
                         self.handle_direction('right', is_down)
-                    elif code in CENTER_KEYS and self.ui:
-                        if self.mode == "pointer":
-                            self.ui.write(e.EV_KEY, e.BTN_LEFT, 1 if is_down else 0)
+                    elif code in CENTER_KEYS:
+                        if self.mode == "typing":
+                            if is_down:
+                                print(">> [按键] 确认发送 -> 模拟按压 Enter", flush=True)
+                                self.submitter.send_enter()
+                        elif self.mode == "mouse" and self.ui_mouse:
+                            self.ui_mouse.write(e.EV_KEY, e.BTN_LEFT, 1 if is_down else 0)
+                            self.ui_mouse.syn()
                         else:
-                            self.ui.write(e.EV_KEY, e.KEY_ENTER, 1 if is_down else 0)
-                        self.ui.syn()
-                    elif code in BACK_KEYS and self.ui:
-                        if self.mode == "pointer":
-                            self.ui.write(e.EV_KEY, e.BTN_RIGHT, 1 if is_down else 0)
+                            if is_down:
+                                self.submitter.send_enter()
+                    elif code in BACK_KEYS:
+                        if self.mode == "mouse" and self.ui_mouse:
+                            self.ui_mouse.write(e.EV_KEY, e.BTN_RIGHT, 1 if is_down else 0)
+                            self.ui_mouse.syn()
                         else:
-                            self.ui.write(e.EV_KEY, e.KEY_ESC, 1 if is_down else 0)
-                        self.ui.syn()
-                    elif code in VOL_UP_KEYS and is_down and self.ui:
-                        self.ui.write(e.EV_REL, e.REL_WHEEL, 1)
-                        self.ui.syn()
-                    elif code in VOL_DOWN_KEYS and is_down and self.ui:
-                        self.ui.write(e.EV_REL, e.REL_WHEEL, -1)
-                        self.ui.syn()
+                            if is_down:
+                                print(">> [按键] 取消 / 返回 -> 模拟按压 ESC", flush=True)
+                                self.submitter.send_esc()
+                    elif code in VOL_UP_KEYS and is_down and self.ui_mouse:
+                        self.ui_mouse.write(e.EV_REL, e.REL_WHEEL, 1)
+                        self.ui_mouse.syn()
+                    elif code in VOL_DOWN_KEYS and is_down and self.ui_mouse:
+                        self.ui_mouse.write(e.EV_REL, e.REL_WHEEL, -1)
+                        self.ui_mouse.syn()
                     elif code in TV_KEYS and is_down:
-                        with self.lock:
-                            self.mode = "directional" if self.mode == "pointer" else "pointer"
-                            self.active_direction = None
-                        print(f"[HID] 遥控器模式已切换为: {self.mode.upper()}")
+                        self.cycle_mode()
             except Exception as err:
-                print(f"[HID] 连接断开或异常: {err}")
+                print(f"[HID] 连接断开或异常: {err}", flush=True)
             finally:
                 try:
                     dev.ungrab()
@@ -208,46 +241,67 @@ class MiAoDaemon:
     STATE_OPENING      = "opening"
     STATE_STREAMING    = "streaming"
 
-    def __init__(self, model_size="base", auto_paste=False, auto_enter=False, enable_mouse=True):
+    def __init__(self, model_size="small", enable_mouse=True, mode="typing"):
         self.protocol = ATVVProtocol()
         self.state = self.STATE_DISCONNECTED
         self.stream_id = 0
-        self.audio_frames = []
-        self.client: BleakClient = None
+        self.client: Optional[BleakClient] = None
         self.lock = asyncio.Lock()
         self.enable_mouse = enable_mouse
 
         self.recordings_dir = os.path.join(os.path.dirname(__file__), "recordings")
         os.makedirs(self.recordings_dir, exist_ok=True)
 
-        # 统一的虚拟输入设备 (支持鼠标位移与按键模拟)
-        self.ui = None
+        # 独立虚拟键盘设备 (确保 Wayland 完美识别为独立物理键盘)
+        self.ui_kb = None
         try:
-            capabilities = {
-                e.EV_REL: [e.REL_X, e.REL_Y, e.REL_WHEEL],
+            kb_caps = {
                 e.EV_KEY: [
-                    e.BTN_LEFT, e.BTN_RIGHT, e.BTN_MIDDLE,
-                    e.KEY_UP, e.KEY_DOWN, e.KEY_LEFT, e.KEY_RIGHT,
-                    e.KEY_ENTER, e.KEY_ESC, e.KEY_LEFTCTRL, e.KEY_LEFTSHIFT, e.KEY_V
+                    e.KEY_ENTER, e.KEY_ESC, e.KEY_BACKSPACE,
+                    e.KEY_LEFTCTRL, e.KEY_LEFTSHIFT, e.KEY_V,
+                    e.KEY_UP, e.KEY_DOWN, e.KEY_LEFT, e.KEY_RIGHT
                 ]
             }
-            self.ui = UInput(capabilities, name="Mi-Ao-Virtual-Input", version=0x1)
-            print("[系统] 虚拟输入设备初始化成功 (/dev/uinput)")
+            self.ui_kb = UInput(kb_caps, name="Mi-Ao-Virtual-Keyboard", version=0x1)
+            print("[系统] 虚拟键盘设备就绪 (/dev/uinput -> Mi-Ao-Virtual-Keyboard)", flush=True)
         except Exception as err:
-            print(f"[系统] 虚拟输入设备未能初始化 (如需飞鼠控制请确认 uinput 权限): {err}")
+            print(f"[系统] 虚拟键盘初始化失败: {err}", flush=True)
 
-        # 提交器与 Whisper 转写器
+        # 独立虚拟鼠标设备
+        self.ui_mouse = None
+        try:
+            mouse_caps = {
+                e.EV_REL: [e.REL_X, e.REL_Y, e.REL_WHEEL],
+                e.EV_KEY: [e.BTN_LEFT, e.BTN_RIGHT, e.BTN_MIDDLE]
+            }
+            self.ui_mouse = UInput(mouse_caps, name="Mi-Ao-Virtual-Mouse", version=0x1)
+            print("[系统] 虚拟鼠标设备就绪 (/dev/uinput -> Mi-Ao-Virtual-Mouse)", flush=True)
+        except Exception as err:
+            print(f"[系统] 虚拟鼠标初始化失败: {err}", flush=True)
+
+        # 提交器与双阶 Whisper 转写器
         self.submitter = LinuxSubmitter(
             base_dir=os.path.dirname(__file__),
-            auto_paste=auto_paste,
-            auto_enter=auto_enter
+            uinput_keyboard=self.ui_kb
         )
         self.transcriber = LocalWhisperTranscriber(model_size=model_size)
 
-        # 飞鼠控制器
+        # 实时流式转写状态
+        self.stream_samples = []
+        self.stream_typed_text = ""
+        self.is_recording = False
+        self.streaming_thread = None
+        self.stream_lock = threading.Lock()
+
+        # 飞鼠与按键控制器
         self.hid_controller = None
         if self.enable_mouse:
-            self.hid_controller = IntegratedHIDController(self.ui)
+            self.hid_controller = IntegratedHIDController(
+                uinput_keyboard=self.ui_kb,
+                uinput_mouse=self.ui_mouse,
+                submitter=self.submitter,
+                mode=mode
+            )
 
     async def find_ble_device(self) -> BLEDevice:
         mac = None
@@ -287,7 +341,7 @@ class MiAoDaemon:
                 caps = event["capabilities"]
                 self.protocol.accept_capabilities(caps)
                 self.state = self.STATE_READY
-                print(f"[语音] ATVV v{caps.version} 协商成功 (Codec={self.protocol.codec})，随时就绪！")
+                print(f"[语音] ATVV v{caps.version} 协商成功 (Codec={self.protocol.codec})，随时就绪！", flush=True)
 
             elif event_type == "start_search":
                 if self.state in (self.STATE_STREAMING, self.STATE_OPENING):
@@ -299,13 +353,18 @@ class MiAoDaemon:
                 if self.state in (self.STATE_OPENING, self.STATE_READY):
                     self.stream_id = event.get("stream_id", 0)
                     self.state = self.STATE_STREAMING
-                    self.audio_frames = []
-                    print("[语音] 正在录音...")
+                    with self.stream_lock:
+                        self.stream_samples = []
+                        self.stream_typed_text = ""
+                        self.is_recording = True
+                    print("\n[语音] 按下语音键，正在倾听并实时打字...", flush=True)
+                    self.streaming_thread = threading.Thread(target=self._streaming_worker, daemon=True)
+                    self.streaming_thread.start()
 
             elif event_type == "audio_stop":
                 if self.state not in (self.STATE_STREAMING, self.STATE_OPENING):
                     return
-                print("[语音] 松开语音键，正在识别...")
+                print("[语音] 松开语音键，正在进行终态校准...", flush=True)
                 await self.finalize_recording(reason="remote-release")
 
             elif event_type == "audio_sync":
@@ -313,21 +372,65 @@ class MiAoDaemon:
 
     def on_audio_notification(self, sender, data: bytearray):
         if self.state in (self.STATE_STREAMING, self.STATE_OPENING):
-            self.audio_frames.append(bytes(data))
+            res = self.protocol.decode_audio(bytes(data))
+            if res and res[1]:
+                with self.stream_lock:
+                    self.stream_samples.extend(res[1])
 
     async def begin_opening(self):
         try:
-            self.audio_frames = []
+            with self.stream_lock:
+                self.stream_samples = []
+                self.stream_typed_text = ""
             self.state = self.STATE_OPENING
             cmd = self.protocol.mic_open_command()
             await self.client.write_gatt_char(ATVVProtocol.TX_UUID, cmd, response=True)
         except Exception:
             self.state = self.STATE_READY
 
+    def _streaming_worker(self):
+        """流式后台线程：每隔约 0.3s 将已录入的音频快速推断，并差量注入打字框"""
+        last_process_time = time.time()
+        min_samples = int(16000 * 0.6)  # 至少 0.6s 语音
+
+        while self.is_recording:
+            time.sleep(0.06)
+            now = time.time()
+            if now - last_process_time < 0.28:
+                continue
+
+            with self.stream_lock:
+                samples_snapshot = list(self.stream_samples)
+
+            if len(samples_snapshot) < min_samples:
+                continue
+
+            last_process_time = now
+            partial_text = self.transcriber.transcribe_stream_samples(samples_snapshot)
+            partial_text = partial_text.strip()
+
+            if not self.is_recording:
+                break
+
+            if partial_text and partial_text != self.stream_typed_text:
+                # 计算公共前缀
+                k = 0
+                while (k < len(self.stream_typed_text) and 
+                       k < len(partial_text) and 
+                       self.stream_typed_text[k] == partial_text[k]):
+                    k += 1
+
+                backspaces = len(self.stream_typed_text) - k
+                delta = partial_text[k:]
+
+                if backspaces > 0 or delta:
+                    self.submitter.type_diff(backspaces, delta)
+                    self.stream_typed_text = partial_text
+                    print(f"  [实时打字] {partial_text}", flush=True)
+
     async def finalize_recording(self, reason: str):
         self.state = self.STATE_READY
-        captured = self.audio_frames
-        self.audio_frames = []
+        self.is_recording = False
 
         try:
             cmd = self.protocol.mic_close_command(self.stream_id)
@@ -335,17 +438,19 @@ class MiAoDaemon:
         except Exception:
             pass
 
-        if not captured:
-            return
+        if self.streaming_thread:
+            self.streaming_thread.join(timeout=0.6)
 
-        all_samples = []
-        for frame in captured:
-            res = self.protocol.decode_audio(frame)
-            if res:
-                all_samples.extend(res[1])
+        with self.stream_lock:
+            all_samples = list(self.stream_samples)
+            currently_typed = self.stream_typed_text
+            self.stream_samples = []
 
         sample_rate = 16000
-        if len(all_samples) < sample_rate // 4:
+        if len(all_samples) < sample_rate * 0.25:
+            # 误触抖动，清理可能已打出的临时文字
+            if currently_typed:
+                self.submitter.type_diff(len(currently_typed), "")
             return
 
         duration = len(all_samples) / sample_rate
@@ -353,25 +458,44 @@ class MiAoDaemon:
         wav_path = os.path.join(self.recordings_dir, f"speech_{timestamp}.wav")
         AudioPipeline.write_wav(all_samples, sample_rate, wav_path)
 
-        # Whisper 识别
-        transcript = self.transcriber.transcribe_samples(all_samples, language="zh")
-        if not transcript:
+        # 终态高精度 Whisper 识别
+        final_text = self.transcriber.transcribe_final_samples(all_samples)
+        if not final_text:
+            if currently_typed:
+                self.submitter.type_diff(len(currently_typed), "")
             return
 
-        res = self.submitter.submit(transcript, audio_path=wav_path)
-        print("--------------------------------------------------")
-        print(f"🎉 语音输入: {transcript}")
-        print(f"   [已保存并写入剪贴板, 耗时 {duration:.2f}s]")
-        print("--------------------------------------------------")
+        # 计算并更新终态与流式打字的差量
+        k = 0
+        while (k < len(currently_typed) and 
+               k < len(final_text) and 
+               currently_typed[k] == final_text[k]):
+            k += 1
+
+        backspaces = len(currently_typed) - k
+        delta = final_text[k:]
+
+        if backspaces > 0 or delta:
+            self.submitter.type_diff(backspaces, delta)
+
+        # 归档并全量同步剪贴板
+        self.submitter.record_submission(final_text, audio_path=wav_path)
+        with self.stream_lock:
+            self.stream_typed_text = ""
+
+        print("--------------------------------------------------", flush=True)
+        print(f"🎉 语音输入完毕: {final_text}", flush=True)
+        print(f"   [已实时输入到打字框 | 按遥控器【OK/确认键】即可发送]", flush=True)
+        print("--------------------------------------------------", flush=True)
 
     async def run_ble(self):
         while True:
             try:
                 device = await self.find_ble_device()
-                print(f"[语音] 正在连接 GATT 语音通道 [{device.address}]...")
+                print(f"[语音] 正在连接 GATT 语音通道 [{device.address}]...", flush=True)
                 async with BleakClient(device, timeout=10.0) as client:
                     self.client = client
-                    print(f"[语音] BLE 通道连接成功！")
+                    print(f"[语音] BLE 通道连接成功！", flush=True)
 
                     await client.start_notify(ATVVProtocol.CONTROL_UUID, self.on_control_notification)
                     await client.start_notify(ATVVProtocol.RX_UUID, self.on_audio_notification)
@@ -380,40 +504,41 @@ class MiAoDaemon:
                     while client.is_connected:
                         await asyncio.sleep(1)
             except Exception as err:
-                print(f"[语音] BLE 连接异常或断开: {err}，5秒后重试...")
+                print(f"[语音] BLE 连接异常或断开: {err}，5秒后重试...", flush=True)
                 await asyncio.sleep(5)
 
     def start(self):
         if self.enable_mouse and self.hid_controller:
             threading.Thread(target=self.hid_controller.start_loop, daemon=True).start()
 
-        print("==================================================")
-        print(">> 【米遥 (MI-AO) Linux 一体化守护服务启动】")
-        print(">> - 语音：随时按住【语音键】说话，松手转写并同步剪贴板")
-        print(">> - 飞鼠：方向环移动鼠标、OK为左键、返回为右键、TV切模式")
-        print("==================================================")
+        mode_desc = "打字与确认发送模式 (OK键 = Enter发送)" if self.hid_controller and self.hid_controller.mode == "typing" else self.hid_controller.mode
+        print("==================================================", flush=True)
+        print(">> 【米遥 (MI-AO) Linux 一体化守护服务启动】", flush=True)
+        print(f">> - 模式：{mode_desc}", flush=True)
+        print(">> - 语音：按住【语音键】说话，文字实时流式输出到打字框", flush=True)
+        print(">> - 发送：松手后按遥控器【OK/确认键】，直接回车发送！", flush=True)
+        print(">> - 切换：按【TV键】可在 打字发送 / 飞鼠点击 / 方向键 间切换", flush=True)
+        print("==================================================", flush=True)
         asyncio.run(self.run_ble())
 
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="米遥 Linux 一体化服务")
-    parser.add_argument("--model", default="base", help="Whisper 模型规格")
-    parser.add_argument("--auto-paste", action="store_true", help="识别后是否自动按 Ctrl+V 粘贴")
-    parser.add_argument("--auto-enter", action="store_true", help="粘贴后是否自动按 Enter 回车")
+    parser.add_argument("--model", default="small", help="终态 Whisper 模型规格 (默认: small，可选: base)")
+    parser.add_argument("--mode", default="typing", choices=["typing", "mouse", "directional"], help="初始遥控器模式 (默认: typing)")
     parser.add_argument("--no-mouse", action="store_true", help="禁用飞鼠按键控制")
     args = parser.parse_args()
 
     daemon = MiAoDaemon(
         model_size=args.model,
-        auto_paste=args.auto_paste,
-        auto_enter=args.auto_enter,
-        enable_mouse=not args.no_mouse
+        enable_mouse=not args.no_mouse,
+        mode=args.mode
     )
     try:
         daemon.start()
     except KeyboardInterrupt:
-        print("\n米遥服务安全退出。")
+        print("\n米遥服务安全退出。", flush=True)
 
 if __name__ == "__main__":
     main()
