@@ -398,6 +398,9 @@ class IntegratedHIDController:
                     if self.mode == "mouse":
                         print(">> [快捷键] 返回 短按 -> 鼠标右键", flush=True)
                         self.mouse_click(e.BTN_RIGHT)
+                    elif self.mode in ("typing", "terminal"):
+                        print(">> [快捷键] 返回 短按 -> 回退删除字符 (Backspace)", flush=True)
+                        self.submitter.send_backspace()
                     else:
                         print(">> [快捷键] 返回 短按 -> 取消 / ESC", flush=True)
                         self.submitter.send_esc()
@@ -480,12 +483,12 @@ class IntegratedHIDController:
         mode_info = {
             "typing": {
                 "title": "💬 通用打字模式 (TYPING)",
-                "desc": "OK: 回车发送 | 长按OK: 换行 (Shift+Enter)\n方向环: 移动鼠标光标 | 返回: ESC",
+                "desc": "OK: 回车发送 | 长按OK: 换行\n返回: 回退删除字符 | 长按返回: 撤销",
                 "icon": "input-keyboard"
             },
             "terminal": {
                 "title": "💻 终端命令行模式 (TERMINAL)",
-                "desc": "OK: 执行命令 | 长按OK: Ctrl+C 中断\n方向环: 翻历史命令 (Up/Down) | 菜单: Tab补全",
+                "desc": "OK: 执行命令 | 长按OK: Ctrl+C 中断\n返回: 回退删除字符 | 长按返回: 清空整行",
                 "icon": "utilities-terminal"
             },
             "mouse": {

@@ -212,6 +212,10 @@ class LinuxSubmitter:
         """模拟按下 ESC 键 (用于取消/退出全屏/Vim常规模式)"""
         self.send_key(e.KEY_ESC)
 
+    def send_backspace(self):
+        """模拟按下 Backspace 退格键 (用于回退删除字符)"""
+        self.send_key(e.KEY_BACKSPACE)
+
     def send_ctrl_c(self):
         """模拟按下 Ctrl + C (终端中断当前命令/终止任务)"""
         self.send_combo(e.KEY_LEFTCTRL, e.KEY_C)
