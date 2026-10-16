@@ -150,17 +150,18 @@ class IntegratedHIDController:
         return None
 
     def pointer_speed(self, held_seconds: float) -> float:
-        if held_seconds < 0.2:
-            return 120.0
-        elif held_seconds < 1.0:
-            progress = (held_seconds - 0.2) / 0.8
-            return 120.0 + progress * (520.0 - 120.0)
+        if held_seconds < 0.15:
+            return 160.0
+        elif held_seconds < 0.75:
+            progress = (held_seconds - 0.15) / 0.60
+            return 160.0 + progress * (720.0 - 160.0)
         else:
-            return min(1100.0, 520.0 + (held_seconds - 1.0) * 420.0)
+            return min(1800.0, 720.0 + (held_seconds - 0.75) * 700.0)
 
     def motion_loop(self):
         tick_interval = 1.0 / 60.0
         last_tick = time.time()
+        accum_x, accum_y = 0.0, 0.0
         while self.running:
             time.sleep(tick_interval)
             now = time.time()
@@ -169,24 +170,36 @@ class IntegratedHIDController:
 
             with self.lock:
                 if self.mode not in ("typing", "mouse") or not self.active_direction or not self.ui_mouse:
+                    accum_x, accum_y = 0.0, 0.0
                     continue
                 held = now - self.direction_pressed_at
-                distance = self.pointer_speed(held) * delta
+                step_dist = self.pointer_speed(held) * delta
 
-                dx, dy = 0, 0
-                if self.active_direction == 'up':    dy = -int(distance)
-                elif self.active_direction == 'down':  dy = int(distance)
-                elif self.active_direction == 'left':  dx = -int(distance)
-                elif self.active_direction == 'right': dx = int(distance)
+                if self.active_direction == 'up':
+                    accum_y -= step_dist
+                elif self.active_direction == 'down':
+                    accum_y += step_dist
+                elif self.active_direction == 'left':
+                    accum_x -= step_dist
+                elif self.active_direction == 'right':
+                    accum_x += step_dist
+
+                dx = int(accum_x)
+                dy = int(accum_y)
+                accum_x -= dx
+                accum_y -= dy
 
                 if dx != 0 or dy != 0:
-                    if dx != 0: self.ui_mouse.write(e.EV_REL, e.REL_X, dx)
-                    if dy != 0: self.ui_mouse.write(e.EV_REL, e.REL_Y, dy)
+                    if dx != 0:
+                        self.ui_mouse.write(e.EV_REL, e.REL_X, dx)
+                    if dy != 0:
+                        self.ui_mouse.write(e.EV_REL, e.REL_Y, dy)
                     self.ui_mouse.syn()
 
-    def handle_direction(self, direction: str, is_down: bool):
+    def handle_direction(self, direction: str, val: int):
         with self.lock:
-            if is_down:
+            if val == 1:
+                # 按键初次按下 (Key Down)
                 if self.mode in ("typing", "mouse"):
                     self.active_direction = direction
                     self.direction_pressed_at = time.time()
@@ -194,7 +207,19 @@ class IntegratedHIDController:
                     key_map = {'up': e.KEY_UP, 'down': e.KEY_DOWN, 'left': e.KEY_LEFT, 'right': e.KEY_RIGHT}
                     self.ui_kb.write(e.EV_KEY, key_map[direction], 1)
                     self.ui_kb.syn()
-            else:
+            elif val == 2:
+                # 按键保持按住 (Key Repeat)
+                if self.mode in ("typing", "mouse"):
+                    # 关键修复: 保持 active_direction 和原始 pressed_at 计时，切勿清空，确保长按动态平滑加速持续生效
+                    if not self.active_direction:
+                        self.active_direction = direction
+                        self.direction_pressed_at = time.time()
+                elif self.ui_kb:
+                    key_map = {'up': e.KEY_UP, 'down': e.KEY_DOWN, 'left': e.KEY_LEFT, 'right': e.KEY_RIGHT}
+                    self.ui_kb.write(e.EV_KEY, key_map[direction], 2)
+                    self.ui_kb.syn()
+            elif val == 0:
+                # 按键真正松开 (Key Up)
                 if self.mode in ("typing", "mouse"):
                     if self.active_direction == direction:
                         self.active_direction = None
@@ -557,13 +582,13 @@ class IntegratedHIDController:
                     is_down = (val == 1)
 
                     if code in DPAD_UP:
-                        self.handle_direction('up', is_down)
+                        self.handle_direction('up', val)
                     elif code in DPAD_DOWN:
-                        self.handle_direction('down', is_down)
+                        self.handle_direction('down', val)
                     elif code in DPAD_LEFT:
-                        self.handle_direction('left', is_down)
+                        self.handle_direction('left', val)
                     elif code in DPAD_RIGHT:
-                        self.handle_direction('right', is_down)
+                        self.handle_direction('right', val)
                     else:
                         self.handle_action_key(code, val)
             except Exception as err:
