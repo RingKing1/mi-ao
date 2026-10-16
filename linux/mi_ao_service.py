@@ -141,10 +141,13 @@ class IntegratedHIDController:
         self.mouse_click(btn)
 
     def mouse_scroll(self, steps: int):
-        if not self.ui_mouse:
+        if not self.ui_mouse or steps == 0:
             return
-        self.ui_mouse.write(e.EV_REL, e.REL_WHEEL, steps)
-        self.ui_mouse.syn()
+        direction = 1 if steps > 0 else -1
+        for _ in range(abs(steps)):
+            self.ui_mouse.write(e.EV_REL, e.REL_WHEEL, direction)
+            self.ui_mouse.syn()
+            time.sleep(0.005)
 
     def find_hid_device(self) -> Optional[InputDevice]:
         for path in sorted(glob.glob("/dev/input/event*")):
@@ -383,8 +386,10 @@ class IntegratedHIDController:
         if code in VOL_UP_KEYS:
             if is_down or is_repeat:
                 if self.mode == "terminal":
+                    print(">> [快捷键] 音量+ -> 终端平滑滚屏 (8 格)", flush=True)
                     self.mouse_scroll(8)
                 elif self.mode == "typing":
+                    print(">> [快捷键] 音量+ -> 页面平滑滚屏 (4 格)", flush=True)
                     self.mouse_scroll(4)
                 elif self.mode == "mouse":
                     print(">> [快捷键] 音量+ -> 系统音量增加", flush=True)
@@ -396,8 +401,10 @@ class IntegratedHIDController:
         if code in VOL_DOWN_KEYS:
             if is_down or is_repeat:
                 if self.mode == "terminal":
+                    print(">> [快捷键] 音量- -> 终端平滑滚屏 (-8 格)", flush=True)
                     self.mouse_scroll(-8)
                 elif self.mode == "typing":
+                    print(">> [快捷键] 音量- -> 页面平滑滚屏 (-4 格)", flush=True)
                     self.mouse_scroll(-4)
                 elif self.mode == "mouse":
                     print(">> [快捷键] 音量- -> 系统音量减小", flush=True)
