@@ -58,6 +58,7 @@ except ImportError:
 
 from atvv_protocol import ATVVProtocol, AudioPipeline
 from whisper_transcriber import LocalWhisperTranscriber
+from groq_transcriber import GroqCloudTranscriber
 from submitter import LinuxSubmitter
 
 XIAOMI_VENDOR_ID = 0x2717
@@ -740,6 +741,11 @@ class MiAoDaemon:
             paste_mode=effective_paste_mode
         )
         self.transcriber = LocalWhisperTranscriber(model_size=model_size)
+        self.groq_transcriber = GroqCloudTranscriber()
+        if self.groq_transcriber.is_available:
+            print(">> [ASR引擎] 已配置 Groq Cloud Whisper API (whisper-large-v3 云端极速高精)", flush=True)
+        else:
+            print(">> [ASR引擎] 使用本地 Whisper 引擎 (离线模式)", flush=True)
 
         # 原始音频数据缓存与解码状态隔离
         self.raw_frames = []
@@ -942,8 +948,13 @@ class MiAoDaemon:
         wav_path = os.path.join(self.recordings_dir, f"speech_{timestamp}.wav")
         AudioPipeline.write_wav(all_samples, sample_rate, wav_path)
 
-        # 终态高精度 Whisper 识别
-        final_text = self.transcriber.transcribe_final_samples(all_samples)
+        # 终态高精度识别 (优先 Groq Cloud whisper-large-v3，离线/失败时自动降级到本地 medium)
+        final_text = None
+        if self.groq_transcriber and self.groq_transcriber.is_available:
+            final_text = self.groq_transcriber.transcribe_samples(all_samples, sample_rate)
+        if not final_text:
+            final_text = self.transcriber.transcribe_final_samples(all_samples)
+
         if not final_text:
             if currently_typed:
                 self.submitter.type_diff(len(currently_typed), "")
@@ -1008,7 +1019,8 @@ class MiAoDaemon:
 
         print("==================================================", flush=True)
         print(">> 【米遥 (MI-AO) Linux 一体化守护服务启动】", flush=True)
-        print(f">> - 模式：{mode_desc}", flush=True)
+        asr_desc = "Groq Cloud (whisper-large-v3 极速高精) + 本地离线自动兜底" if (self.groq_transcriber and self.groq_transcriber.is_available) else f"本地双阶 Whisper (base流式 + {self.transcriber.final_model_name}终态)"
+        print(f">> - 引擎：{asr_desc}", flush=True)
         print(">> - 语音：按住【语音键】说话，文字实时流式输出到打字框", flush=True)
         print(">> - 发送：松手后按遥控器【OK/确认键】，直接回车发送！", flush=True)
         print(">> - 切换：【短按TV】切 打字/终端 常用模式，【长按TV >0.45s】切 飞鼠/演示 特殊模式", flush=True)
