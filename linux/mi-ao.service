@@ -7,7 +7,7 @@ Wants=bluetooth.target
 [Service]
 Type=simple
 WorkingDirectory=%h/working_ppt/mi-ao
-ExecStart=/usr/bin/python3 %h/working_ppt/mi-ao/linux/mi_ao_service.py --model small --mode typing
+ExecStart=/usr/bin/python3 %h/working_ppt/mi-ao/linux/mi_ao_service.py --model medium --mode typing
 Restart=always
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1

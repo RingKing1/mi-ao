@@ -23,10 +23,28 @@ except ImportError:
     print("错误: 未安装 faster-whisper。请运行: python3 -m pip install faster-whisper")
     sys.exit(1)
 
-DEFAULT_PROMPT = "简体中文。"
+DEFAULT_PROMPT = "这是一段关于操作系统、Linux终端、命令行、快捷键、浏览器、窗口、音量键、退格删除、撤销与文本编辑的中文普通话语音。"
+
+# 常见语音识别同音字/错别字纠错映射表
+KEYWORD_CORRECTIONS = {
+    "中端迷你好": "终端命令行",
+    "中端迷你行": "终端命令行",
+    "战断迷你行": "终端命令行",
+    "中端命令行": "终端命令行",
+    "战断命令行": "终端命令行",
+    "旧战器": "浏览器",
+    "纽纳机": "浏览器",
+    "留言节": "浏览器",
+    "车效": "撤销",
+    "车销": "撤销",
+    "control力": "Ctrl-Z",
+    "音量价钱": "音量加",
+    "音量减减": "音量减",
+    "裂表": "列表",
+}
 
 class LocalWhisperTranscriber:
-    def __init__(self, model_size: str = "small", prompt: str = DEFAULT_PROMPT):
+    def __init__(self, model_size: str = "medium", prompt: str = DEFAULT_PROMPT):
         self.final_model_name = model_size
         self.stream_model_name = "base"
         self.prompt = prompt
@@ -37,7 +55,7 @@ class LocalWhisperTranscriber:
         # 流式快速模型 (base, CPU int8 加速，延迟约 0.2s)
         self.stream_model = WhisperModel(self.stream_model_name, device="cpu", compute_type="int8")
         
-        # 终态高精度模型
+        # 终态高精度模型 (medium, 极高准确率)
         if self.final_model_name == self.stream_model_name:
             self.final_model = self.stream_model
         else:
@@ -55,14 +73,31 @@ class LocalWhisperTranscriber:
         t1 = time.time()
         print(f"Whisper 双阶模型加载与预热完成 (耗时 {t1-t0:.2f}s, CPU int8)", flush=True)
 
+    def _normalize_audio(self, samples: List[int]) -> np.ndarray:
+        """自动增益归一化：将遥控器微弱的收音信号按比例放大，使音频峰值处于最佳动态区间"""
+        raw_arr = np.array(samples, dtype=np.int16).astype(np.float32)
+        peak = float(np.max(np.abs(raw_arr)))
+        if peak > 150.0:
+            # 缩放至 85% 满量程，最大增益不超过 4.5 倍以防放大底噪
+            gain = min(4.5, (32767.0 * 0.85) / peak)
+            normalized = np.clip(raw_arr * gain, -32768.0, 32767.0) / 32768.0
+            return normalized
+        return raw_arr / 32768.0
+
     def _clean_text(self, text: str) -> str:
         text = text.strip()
         if not text:
+            return ""
+        # 过滤 Whisper 在静音时偶然产生的字幕幻觉
+        if any(bad_phrase in text for bad_phrase in ["字幕by", "字幕由", "索兰娅"]):
             return ""
         # 仅过滤明显异常的连续单字重复 (如 "语语语语...")
         for i in range(len(text) - 3):
             if text[i] == text[i+1] == text[i+2] == text[i+3]:
                 return ""
+        # 高频词纠错
+        for bad_w, good_w in KEYWORD_CORRECTIONS.items():
+            text = text.replace(bad_w, good_w)
         return text
 
     def transcribe_stream_samples(self, samples: List[int]) -> str:
@@ -70,7 +105,7 @@ class LocalWhisperTranscriber:
         if not samples or len(samples) < 16000 * 0.5:
             return ""
 
-        float_audio = np.array(samples, dtype=np.int16).astype(np.float32) / 32768.0
+        float_audio = self._normalize_audio(samples)
 
         try:
             segments, _ = self.stream_model.transcribe(
@@ -85,7 +120,7 @@ class LocalWhisperTranscriber:
             # 流式过程中去掉末尾句号，保证视觉输入连贯
             raw_text = raw_text.rstrip("。，,. ")
             return self._clean_text(raw_text)
-        except Exception as e:
+        except Exception:
             return ""
 
     def transcribe_final_samples(self, samples: List[int]) -> str:
@@ -93,7 +128,7 @@ class LocalWhisperTranscriber:
         if not samples or len(samples) < 16000 * 0.25:
             return ""
 
-        float_audio = np.array(samples, dtype=np.int16).astype(np.float32) / 32768.0
+        float_audio = self._normalize_audio(samples)
         start_t = time.time()
 
         try:

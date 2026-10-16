@@ -382,11 +382,8 @@ class IntegratedHIDController:
         # 1. 音量加减键 (短按单步，长按连发)
         if code in VOL_UP_KEYS:
             if is_down or is_repeat:
-                if self.mode == "typing":
+                if self.mode in ("typing", "terminal"):
                     self.mouse_scroll(2)
-                elif self.mode == "terminal":
-                    print(">> [快捷键] 音量+ -> 终端向上翻屏 (Shift+PageUp)", flush=True)
-                    self.submitter.send_shift_page_up()
                 elif self.mode == "mouse":
                     print(">> [快捷键] 音量+ -> 系统音量增加", flush=True)
                     self.submitter.send_key(e.KEY_VOLUMEUP)
@@ -396,11 +393,8 @@ class IntegratedHIDController:
 
         if code in VOL_DOWN_KEYS:
             if is_down or is_repeat:
-                if self.mode == "typing":
+                if self.mode in ("typing", "terminal"):
                     self.mouse_scroll(-2)
-                elif self.mode == "terminal":
-                    print(">> [快捷键] 音量- -> 终端向下翻屏 (Shift+PageDown)", flush=True)
-                    self.submitter.send_shift_page_down()
                 elif self.mode == "mouse":
                     print(">> [快捷键] 音量- -> 系统音量减小", flush=True)
                     self.submitter.send_key(e.KEY_VOLUMEDOWN)
@@ -1020,7 +1014,7 @@ class MiAoDaemon:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="米遥 Linux 一体化服务")
-    parser.add_argument("--model", default="small", help="终态 Whisper 模型规格 (默认: small，可选: base)")
+    parser.add_argument("--model", default="medium", help="终态 Whisper 模型规格 (默认: medium，可选: small, base)")
     parser.add_argument("--mode", default="typing", choices=["typing", "terminal", "mouse", "directional"], help="初始遥控器模式 (默认: typing, 可选: terminal, mouse, directional)")
     parser.add_argument("--paste-mode", default="gui", choices=["gui", "terminal", "universal"], help="粘贴快捷键策略 (默认: gui [Ctrl+V], 可选: terminal [Ctrl+Shift+V], universal [Shift+Insert])")
     parser.add_argument("--no-mouse", action="store_true", help="禁用飞鼠按键控制")
