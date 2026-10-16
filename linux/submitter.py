@@ -47,6 +47,7 @@ class LinuxSubmitter:
         # 1. 优先使用 Wayland 原生 wl-copy (开启独立会话与 DEVNULL 避免阻塞)
         if shutil.which("wl-copy"):
             try:
+                # 同步写入常规剪贴板 (Ctrl+V) 与 Primary 选择区
                 p = subprocess.Popen(
                     ["wl-copy", text],
                     stdin=subprocess.DEVNULL,
@@ -55,9 +56,16 @@ class LinuxSubmitter:
                     start_new_session=True
                 )
                 p.wait(timeout=0.08)
+                # 顺便设置一次 primary selection
+                subprocess.Popen(
+                    ["wl-copy", "-p", text],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
                 return True
             except subprocess.TimeoutExpired:
-                # 进程在后台常驻服务剪贴板，属正常情况
                 return True
             except Exception:
                 pass
@@ -87,7 +95,7 @@ class LinuxSubmitter:
         return False
 
     def paste(self):
-        """模拟按下 Ctrl+V 粘贴内容，保持足够保持时间确保 Compositor 识别"""
+        """模拟按下 Ctrl+V 粘贴内容，保持足够保持时间确保 Compositor 与应用识别"""
         if not self.ui_kb:
             return
         time.sleep(0.015)
@@ -97,7 +105,7 @@ class LinuxSubmitter:
         time.sleep(0.01)
         self.ui_kb.write(e.EV_KEY, e.KEY_V, 1)
         self.ui_kb.syn()
-        time.sleep(0.03)  # 保持 30ms
+        time.sleep(0.035)  # 保持 35ms 确保 Chrome / Electron 完全捕获
         self.ui_kb.write(e.EV_KEY, e.KEY_V, 0)
         self.ui_kb.syn()
         time.sleep(0.01)
@@ -118,10 +126,10 @@ class LinuxSubmitter:
             for _ in range(backspaces):
                 self.ui_kb.write(e.EV_KEY, e.KEY_BACKSPACE, 1)
                 self.ui_kb.syn()
-                time.sleep(0.003)
+                time.sleep(0.004)
                 self.ui_kb.write(e.EV_KEY, e.KEY_BACKSPACE, 0)
                 self.ui_kb.syn()
-                time.sleep(0.003)
+                time.sleep(0.004)
 
         # 2. 处理增量文字粘贴
         if delta:
@@ -135,7 +143,7 @@ class LinuxSubmitter:
             return
         self.ui_kb.write(e.EV_KEY, e.KEY_ENTER, 1)
         self.ui_kb.syn()
-        time.sleep(0.03)
+        time.sleep(0.035)
         self.ui_kb.write(e.EV_KEY, e.KEY_ENTER, 0)
         self.ui_kb.syn()
 
@@ -145,7 +153,7 @@ class LinuxSubmitter:
             return
         self.ui_kb.write(e.EV_KEY, e.KEY_ESC, 1)
         self.ui_kb.syn()
-        time.sleep(0.03)
+        time.sleep(0.035)
         self.ui_kb.write(e.EV_KEY, e.KEY_ESC, 0)
         self.ui_kb.syn()
 

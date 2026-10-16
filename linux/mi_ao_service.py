@@ -19,7 +19,7 @@ import glob
 import asyncio
 import threading
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 # 确保所有终端输出即时刷新到 systemd journal 日志
 try:
@@ -252,18 +252,12 @@ class MiAoDaemon:
         self.recordings_dir = os.path.join(os.path.dirname(__file__), "recordings")
         os.makedirs(self.recordings_dir, exist_ok=True)
 
-        # 独立虚拟键盘设备 (确保 Wayland 完美识别为独立物理键盘)
+        # 完整虚拟键盘设备 (配置 1~255 完整键盘键位，确保 udev 赋予 ID_INPUT_KEYBOARD=1 属性)
         self.ui_kb = None
         try:
-            kb_caps = {
-                e.EV_KEY: [
-                    e.KEY_ENTER, e.KEY_ESC, e.KEY_BACKSPACE,
-                    e.KEY_LEFTCTRL, e.KEY_LEFTSHIFT, e.KEY_V,
-                    e.KEY_UP, e.KEY_DOWN, e.KEY_LEFT, e.KEY_RIGHT
-                ]
-            }
-            self.ui_kb = UInput(kb_caps, name="Mi-Ao-Virtual-Keyboard", version=0x1)
-            print("[系统] 虚拟键盘设备就绪 (/dev/uinput -> Mi-Ao-Virtual-Keyboard)", flush=True)
+            full_keys = [k for k in range(1, 256)]
+            self.ui_kb = UInput({e.EV_KEY: full_keys}, name="Mi-Ao-Virtual-Keyboard", version=0x1)
+            print("[系统] 虚拟键盘设备就绪 (完整键位 ID_INPUT_KEYBOARD=1 /dev/uinput)", flush=True)
         except Exception as err:
             print(f"[系统] 虚拟键盘初始化失败: {err}", flush=True)
 
@@ -286,8 +280,10 @@ class MiAoDaemon:
         )
         self.transcriber = LocalWhisperTranscriber(model_size=model_size)
 
-        # 实时流式转写状态
-        self.stream_samples = []
+        # 原始音频数据缓存与解码状态隔离
+        self.raw_frames = []
+        self.sync_predictor = 0
+        self.sync_step = 0
         self.stream_typed_text = ""
         self.is_recording = False
         self.streaming_thread = None
@@ -302,6 +298,21 @@ class MiAoDaemon:
                 submitter=self.submitter,
                 mode=mode
             )
+
+    def decode_raw_frames(self, frames: List[bytes], predictor: int, step_index: int) -> List[int]:
+        """每次基于独立全新的解码器状态从第 0 帧解码，彻底杜绝跨会话状态累积污染"""
+        if not frames:
+            return []
+        proto = ATVVProtocol()
+        if self.protocol.capabilities:
+            proto.accept_capabilities(self.protocol.capabilities)
+        proto.decoder.reset(predictor, step_index)
+        samples = []
+        for f in frames:
+            res = proto.decode_audio(f)
+            if res and res[1]:
+                samples.extend(res[1])
+        return samples
 
     async def find_ble_device(self) -> BLEDevice:
         mac = None
@@ -354,7 +365,9 @@ class MiAoDaemon:
                     self.stream_id = event.get("stream_id", 0)
                     self.state = self.STATE_STREAMING
                     with self.stream_lock:
-                        self.stream_samples = []
+                        self.raw_frames = []
+                        self.sync_predictor = 0
+                        self.sync_step = 0
                         self.stream_typed_text = ""
                         self.is_recording = True
                     print("\n[语音] 按下语音键，正在倾听并实时打字...", flush=True)
@@ -368,19 +381,21 @@ class MiAoDaemon:
                 await self.finalize_recording(reason="remote-release")
 
             elif event_type == "audio_sync":
-                self.protocol.decoder.reset(event["predictor"], event["step_index"])
+                with self.stream_lock:
+                    self.sync_predictor = event.get("predictor", 0)
+                    self.sync_step = event.get("step_index", 0)
 
     def on_audio_notification(self, sender, data: bytearray):
         if self.state in (self.STATE_STREAMING, self.STATE_OPENING):
-            res = self.protocol.decode_audio(bytes(data))
-            if res and res[1]:
-                with self.stream_lock:
-                    self.stream_samples.extend(res[1])
+            with self.stream_lock:
+                self.raw_frames.append(bytes(data))
 
     async def begin_opening(self):
         try:
             with self.stream_lock:
-                self.stream_samples = []
+                self.raw_frames = []
+                self.sync_predictor = 0
+                self.sync_step = 0
                 self.stream_typed_text = ""
             self.state = self.STATE_OPENING
             cmd = self.protocol.mic_open_command()
@@ -389,9 +404,10 @@ class MiAoDaemon:
             self.state = self.STATE_READY
 
     def _streaming_worker(self):
-        """流式后台线程：每隔约 0.3s 将已录入的音频快速推断，并差量注入打字框"""
+        """流式后台线程：每隔约 0.3s 将已录入的原始帧快速推断，并差量注入打字框"""
         last_process_time = time.time()
-        min_samples = int(16000 * 0.6)  # 至少 0.6s 语音
+        # 16kHz ADPCM 每帧 120 字节 = 240 samples (15ms)。40 帧约为 0.6s
+        min_frames = 40
 
         while self.is_recording:
             time.sleep(0.06)
@@ -400,13 +416,16 @@ class MiAoDaemon:
                 continue
 
             with self.stream_lock:
-                samples_snapshot = list(self.stream_samples)
+                frames_snapshot = list(self.raw_frames)
+                pred = self.sync_predictor
+                step = self.sync_step
 
-            if len(samples_snapshot) < min_samples:
+            if len(frames_snapshot) < min_frames:
                 continue
 
             last_process_time = now
-            partial_text = self.transcriber.transcribe_stream_samples(samples_snapshot)
+            samples = self.decode_raw_frames(frames_snapshot, pred, step)
+            partial_text = self.transcriber.transcribe_stream_samples(samples)
             partial_text = partial_text.strip()
 
             if not self.is_recording:
@@ -442,11 +461,15 @@ class MiAoDaemon:
             self.streaming_thread.join(timeout=0.6)
 
         with self.stream_lock:
-            all_samples = list(self.stream_samples)
+            all_frames = list(self.raw_frames)
+            pred = self.sync_predictor
+            step = self.sync_step
             currently_typed = self.stream_typed_text
-            self.stream_samples = []
+            self.raw_frames = []
 
+        all_samples = self.decode_raw_frames(all_frames, pred, step)
         sample_rate = 16000
+
         if len(all_samples) < sample_rate * 0.25:
             # 误触抖动，清理可能已打出的临时文字
             if currently_typed:
