@@ -101,6 +101,8 @@ class IntegratedHIDController:
         self.long_press_triggered = set()
         self.last_home_click = 0.0
         self.home_single_timer = None
+        self.last_menu_click = 0.0
+        self.menu_single_timer = None
 
     def cancel_all_timers(self):
         with self.lock:
@@ -116,6 +118,12 @@ class IntegratedHIDController:
                 except Exception:
                     pass
                 self.home_single_timer = None
+            if self.menu_single_timer:
+                try:
+                    self.menu_single_timer.cancel()
+                except Exception:
+                    pass
+                self.menu_single_timer = None
             self.long_press_triggered.clear()
 
     def mouse_click(self, btn: int = e.BTN_LEFT):
@@ -271,13 +279,41 @@ class IntegratedHIDController:
             print(">> [快捷键] 菜单 长按 (>0.45s) -> 全选内容 (Ctrl+A)", flush=True)
             self.submitter.send_ctrl_a()
         elif self.mode == "terminal":
-            print(">> [快捷键] 菜单 长按 (>0.45s) -> 终端历史反向搜索 (Ctrl+R)", flush=True)
-            self.submitter.send_ctrl_r()
+            print(">> [快捷键] 菜单 长按 (>0.45s) -> 命令行自动补全 (Tab)", flush=True)
+            self.submitter.send_tab()
         elif self.mode == "mouse":
             print(">> [快捷键] 菜单 长按 (>0.45s) -> 鼠标中键点击", flush=True)
             self.mouse_click(e.BTN_MIDDLE)
         else:
             print(">> [快捷键] 菜单 长按 (>0.45s) -> 全屏切换 (F11)", flush=True)
+            self.submitter.send_f11()
+
+    def on_menu_single_click(self):
+        if self.mode == "terminal":
+            print(">> [快捷键] 菜单 单击 -> 切换不同终端独立窗口 (Alt+`)", flush=True)
+            self.submitter.send_switch_terminal_window()
+        elif self.mode == "typing":
+            print(">> [快捷键] 菜单 单击 -> 鼠标右键菜单", flush=True)
+            self.mouse_click(e.BTN_RIGHT)
+        elif self.mode == "mouse":
+            print(">> [快捷键] 菜单 单击 -> 鼠标中键点击", flush=True)
+            self.mouse_click(e.BTN_MIDDLE)
+        else:
+            print(">> [快捷键] 菜单 单击 -> 全屏切换 (F11)", flush=True)
+            self.submitter.send_f11()
+
+    def on_menu_double_click(self):
+        if self.mode == "terminal":
+            print(">> [快捷键] 菜单 双击 -> 新建终端独立窗口 (Ctrl+Shift+N)", flush=True)
+            self.submitter.send_new_terminal_window()
+        elif self.mode == "typing":
+            print(">> [快捷键] 菜单 双击 -> 全选内容 (Ctrl+A)", flush=True)
+            self.submitter.send_ctrl_a()
+        elif self.mode == "mouse":
+            print(">> [快捷键] 菜单 双击 -> 鼠标中键双击", flush=True)
+            self.mouse_double_click(e.BTN_MIDDLE)
+        else:
+            print(">> [快捷键] 菜单 双击 -> 全屏切换 (F11)", flush=True)
             self.submitter.send_f11()
 
     def on_power_long_press(self):
@@ -291,8 +327,8 @@ class IntegratedHIDController:
             print(">> [快捷键] HOME 单击 -> 快速切换应用窗口 (Alt+Tab)", flush=True)
             self.submitter.send_alt_tab()
         elif self.mode == "terminal":
-            print(">> [快捷键] HOME 单击 -> 终端一键清屏 (Ctrl+L)", flush=True)
-            self.submitter.send_ctrl_l()
+            print(">> [快捷键] HOME 单击 -> 同一终端切换标签页 (Ctrl+PageDown)", flush=True)
+            self.submitter.send_next_terminal_tab()
         elif self.mode == "mouse":
             print(">> [快捷键] HOME 单击 -> 显示桌面 (Super+D)", flush=True)
             self.submitter.send_super_d()
@@ -488,18 +524,21 @@ class IntegratedHIDController:
                     if was_long:
                         self.long_press_triggered.remove("menu")
                 if not was_long:
-                    if self.mode == "typing":
-                        print(">> [快捷键] 菜单 短按 -> 鼠标右键菜单", flush=True)
-                        self.mouse_click(e.BTN_RIGHT)
-                    elif self.mode == "terminal":
-                        print(">> [快捷键] 菜单 短按 -> 命令/路径补全 (Tab)", flush=True)
-                        self.submitter.send_tab()
-                    elif self.mode == "mouse":
-                        print(">> [快捷键] 菜单 短按 -> 鼠标中键点击", flush=True)
-                        self.mouse_click(e.BTN_MIDDLE)
-                    else:
-                        print(">> [快捷键] 菜单 短按 -> 全屏切换 (F11)", flush=True)
-                        self.submitter.send_f11()
+                    now = time.time()
+                    with self.lock:
+                        if now - self.last_menu_click < 0.28:
+                            if self.menu_single_timer:
+                                self.menu_single_timer.cancel()
+                                self.menu_single_timer = None
+                            self.last_menu_click = 0.0
+                            is_double = True
+                        else:
+                            self.last_menu_click = now
+                            self.menu_single_timer = threading.Timer(0.28, self.on_menu_single_click)
+                            self.menu_single_timer.start()
+                            is_double = False
+                    if is_double:
+                        self.on_menu_double_click()
             return
 
         # 7. POWER 电源键 (短按启动器, 长按锁屏)
@@ -533,7 +572,7 @@ class IntegratedHIDController:
             },
             "terminal": {
                 "title": "💻 终端命令行模式 (TERMINAL)",
-                "desc": "OK: 执行命令 | 返回: 退格删除\n短按TV: 切打字模式 | 长按TV: 切无线飞鼠",
+                "desc": "HOME: 切标签/双击新建标签\n菜单: 切终端/双击新建终端",
                 "icon": "utilities-terminal"
             },
             "mouse": {

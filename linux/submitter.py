@@ -276,9 +276,21 @@ class LinuxSubmitter:
         """模拟按下 Shift + PageDown (终端缓冲区向下翻屏)"""
         self.send_combo(e.KEY_LEFTSHIFT, e.KEY_PAGEDOWN)
 
+    def send_next_terminal_tab(self):
+        """模拟按下 Ctrl + PageDown (同一终端内向后切换标签页)"""
+        self.send_combo(e.KEY_LEFTCTRL, e.KEY_PAGEDOWN)
+
     def send_new_terminal_tab(self):
         """模拟按下 Ctrl + Shift + T (终端新建标签页)"""
         self.send_combo(e.KEY_LEFTCTRL, e.KEY_LEFTSHIFT, e.KEY_T)
+
+    def send_switch_terminal_window(self):
+        """模拟按下 Alt + ` (在不同终端独立窗口之间快速切换)"""
+        self.send_combo(e.KEY_LEFTALT, e.KEY_GRAVE, duration=0.05)
+
+    def send_new_terminal_window(self):
+        """模拟按下 Ctrl + Shift + N (新建终端独立窗口)"""
+        self.send_combo(e.KEY_LEFTCTRL, e.KEY_LEFTSHIFT, e.KEY_N)
 
     def send_f5(self):
         """模拟按下 F5 (PPT 从头放映 / 网页刷新)"""
