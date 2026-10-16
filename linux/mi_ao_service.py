@@ -86,6 +86,7 @@ class IntegratedHIDController:
         self.submitter = submitter
         self.running = False
         self.mode = mode  # "typing" (通用GUI: Ctrl+V), "terminal" (Linux终端: Ctrl+Shift+V), "mouse" (飞鼠), "directional" (方向键)
+        self.last_input_mode = mode if mode in ("typing", "terminal") else "typing"
         if self.mode == "terminal":
             self.submitter.set_paste_mode("terminal")
         elif self.mode == "typing":
@@ -307,6 +308,33 @@ class IntegratedHIDController:
             print(">> [快捷键] HOME 双击 -> PPT 从当前页放映 (Shift+F5)", flush=True)
             self.submitter.send_shift_f5()
 
+    def on_tv_short_press(self):
+        """短按 TV 键：在两大常用模式（通用打字 TYPING ⇋ 终端命令行 TERMINAL）之间快速切换"""
+        if self.mode == "typing":
+            print(">> [快捷键] TV 短按 -> 切换至 终端命令行模式 (TERMINAL)", flush=True)
+            self.switch_to_mode("terminal")
+        elif self.mode == "terminal":
+            print(">> [快捷键] TV 短按 -> 切换至 通用打字模式 (TYPING)", flush=True)
+            self.switch_to_mode("typing")
+        else:
+            target = getattr(self, "last_input_mode", "typing")
+            print(f">> [快捷键] TV 短按 -> 退出特殊模式，切回常用输入模式 ({target.upper()})", flush=True)
+            self.switch_to_mode(target)
+
+    def on_tv_long_press(self):
+        """长按 TV 键 (>0.45s)：切换到【无线飞鼠模式 (MOUSE)】或【演讲演示模式 (DIRECTIONAL)】"""
+        with self.lock:
+            self.long_press_triggered.add("tv")
+        if self.mode == "mouse":
+            print(">> [快捷键] TV 长按 (>0.45s) -> 切换至 演讲演示模式 (DIRECTIONAL)", flush=True)
+            self.switch_to_mode("directional")
+        elif self.mode == "directional":
+            print(">> [快捷键] TV 长按 (>0.45s) -> 切换至 无线飞鼠模式 (MOUSE)", flush=True)
+            self.switch_to_mode("mouse")
+        else:
+            print(">> [快捷键] TV 长按 (>0.45s) -> 切换至 无线飞鼠模式 (MOUSE)", flush=True)
+            self.switch_to_mode("mouse")
+
     def handle_action_key(self, code: int, val: int):
         is_down = (val == 1)
         is_up = (val == 0)
@@ -341,10 +369,24 @@ class IntegratedHIDController:
                     self.submitter.send_page_down()
             return
 
-        # 2. TV 模式切换键
+        # 2. TV 模式切换键 (短按切换前两大常用模式，长按切换飞鼠/演示模式)
         if code in TV_KEYS:
             if is_down:
-                self.cycle_mode()
+                with self.lock:
+                    if "tv" in self.key_timers:
+                        self.key_timers["tv"].cancel()
+                    t = threading.Timer(0.45, self.on_tv_long_press)
+                    self.key_timers["tv"] = t
+                    t.start()
+            elif is_up:
+                with self.lock:
+                    t = self.key_timers.pop("tv", None)
+                    if t: t.cancel()
+                    was_long = "tv" in self.long_press_triggered
+                    if was_long:
+                        self.long_press_triggered.remove("tv")
+                if not was_long:
+                    self.on_tv_short_press()
             return
 
         # 3. CENTER 确认键 (短按发送/执行, 长按换行/中断)
@@ -483,22 +525,22 @@ class IntegratedHIDController:
         mode_info = {
             "typing": {
                 "title": "💬 通用打字模式 (TYPING)",
-                "desc": "OK: 回车发送 | 长按OK: 换行\n返回: 回退删除字符 | 长按返回: 撤销",
+                "desc": "OK: 回车发送 | 返回: 退格删除\n短按TV: 切终端模式 | 长按TV: 切无线飞鼠",
                 "icon": "input-keyboard"
             },
             "terminal": {
                 "title": "💻 终端命令行模式 (TERMINAL)",
-                "desc": "OK: 执行命令 | 长按OK: Ctrl+C 中断\n返回: 回退删除字符 | 长按返回: 清空整行",
+                "desc": "OK: 执行命令 | 返回: 退格删除\n短按TV: 切打字模式 | 长按TV: 切无线飞鼠",
                 "icon": "utilities-terminal"
             },
             "mouse": {
                 "title": "🖱️ 无线飞鼠模式 (MOUSE)",
-                "desc": "OK: 鼠标左键 | 长按OK: 双击\n返回: 鼠标右键 | 音量: 调节系统声音",
+                "desc": "OK: 鼠标左键 | 返回: 鼠标右键\n短按TV: 退回打字 | 长按TV: 切演讲演示",
                 "icon": "input-mouse"
             },
             "directional": {
                 "title": "📊 演讲演示模式 (DIRECTIONAL)",
-                "desc": "OK: 下一页 (空格) | 方向: 翻页\nHOME: 放映幻灯片 (F5) | 菜单: 全屏",
+                "desc": "OK: 空格下一页 | 方向: 翻页\n短按TV: 退回打字 | 长按TV: 切无线飞鼠",
                 "icon": "video-display"
             }
         }
@@ -540,11 +582,11 @@ class IntegratedHIDController:
             except Exception:
                 pass
 
-    def cycle_mode(self):
-        modes = ["typing", "terminal", "mouse", "directional"]
+    def switch_to_mode(self, new_mode: str):
         with self.lock:
-            idx = modes.index(self.mode) if self.mode in modes else 0
-            self.mode = modes[(idx + 1) % len(modes)]
+            self.mode = new_mode
+            if new_mode in ("typing", "terminal"):
+                self.last_input_mode = new_mode
             self.active_direction = None
             if self.mode == "terminal":
                 self.submitter.set_paste_mode("terminal")
@@ -561,6 +603,11 @@ class IntegratedHIDController:
             print("[HID] 模式切换为: 【演讲演示模式 (DIRECTIONAL)】- 方向环翻页，OK下一页(空格)，HOME放映(F5)", flush=True)
 
         self.notify_mode_change()
+
+    def cycle_mode(self):
+        modes = ["typing", "terminal", "mouse", "directional"]
+        idx = modes.index(self.mode) if self.mode in modes else 0
+        self.switch_to_mode(modes[(idx + 1) % len(modes)])
 
     def start_loop(self):
         self.running = True
@@ -923,7 +970,7 @@ class MiAoDaemon:
         print(f">> - 模式：{mode_desc}", flush=True)
         print(">> - 语音：按住【语音键】说话，文字实时流式输出到打字框", flush=True)
         print(">> - 发送：松手后按遥控器【OK/确认键】，直接回车发送！", flush=True)
-        print(">> - 切换：按【TV键】可在 通用打字 / 终端打字 / 飞鼠点击 / 方向键 间切换", flush=True)
+        print(">> - 切换：【短按TV】切 打字/终端 常用模式，【长按TV >0.45s】切 飞鼠/演示 特殊模式", flush=True)
         print("==================================================", flush=True)
         asyncio.run(self.run_ble())
 
