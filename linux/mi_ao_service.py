@@ -448,6 +448,68 @@ class IntegratedHIDController:
                     self.submitter.send_super_key()
             return
 
+    def notify_mode_change(self):
+        """桌面 OSD 弹窗通知与音效提示 (Desktop Notification & Sound Prompt)"""
+        mode_info = {
+            "typing": {
+                "title": "💬 通用打字模式 (TYPING)",
+                "desc": "OK: 回车发送 | 长按OK: 换行 (Shift+Enter)\n方向环: 移动鼠标光标 | 返回: ESC",
+                "icon": "input-keyboard"
+            },
+            "terminal": {
+                "title": "💻 终端命令行模式 (TERMINAL)",
+                "desc": "OK: 执行命令 | 长按OK: Ctrl+C 中断\n方向环: 翻历史命令 (Up/Down) | 菜单: Tab补全",
+                "icon": "utilities-terminal"
+            },
+            "mouse": {
+                "title": "🖱️ 无线飞鼠模式 (MOUSE)",
+                "desc": "OK: 鼠标左键 | 长按OK: 双击\n返回: 鼠标右键 | 音量: 调节系统声音",
+                "icon": "input-mouse"
+            },
+            "directional": {
+                "title": "📊 演讲演示模式 (DIRECTIONAL)",
+                "desc": "OK: 下一页 (空格) | 方向: 翻页\nHOME: 放映幻灯片 (F5) | 菜单: 全屏",
+                "icon": "video-display"
+            }
+        }
+        info = mode_info.get(self.mode, {
+            "title": f"模式切换: {self.mode}",
+            "desc": "",
+            "icon": "dialog-information"
+        })
+
+        # 1. 桌面通知 (利用 x-canonical-private-synchronous 确保快速连按时无缝替换同一横幅)
+        if shutil.which("notify-send"):
+            try:
+                subprocess.Popen(
+                    [
+                        "notify-send",
+                        "-a", "米遥 MI-AO",
+                        "-i", info["icon"],
+                        "-t", "1800",
+                        "-h", "string:x-canonical-private-synchronous:mi-ao-mode",
+                        info["title"],
+                        info["desc"]
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+            except Exception:
+                pass
+
+        # 2. 播放轻柔提示音
+        if shutil.which("canberra-gtk-play"):
+            try:
+                subprocess.Popen(
+                    ["canberra-gtk-play", "-i", "audio-volume-change"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+            except Exception:
+                pass
+
     def cycle_mode(self):
         modes = ["typing", "terminal", "mouse", "directional"]
         with self.lock:
@@ -467,6 +529,8 @@ class IntegratedHIDController:
             print("[HID] 模式切换为: 【无线飞鼠模式 (MOUSE)】- OK左键/长按双击，返回右键，音量调系统声", flush=True)
         else:
             print("[HID] 模式切换为: 【演讲演示模式 (DIRECTIONAL)】- 方向环翻页，OK下一页(空格)，HOME放映(F5)", flush=True)
+
+        self.notify_mode_change()
 
     def start_loop(self):
         self.running = True
