@@ -385,12 +385,9 @@ class IntegratedHIDController:
         # 1. 音量加减键 (短按单步，长按连发)
         if code in VOL_UP_KEYS:
             if is_down or is_repeat:
-                if self.mode == "terminal":
-                    print(">> [快捷键] 音量+ -> 终端平滑滚屏 (8 格)", flush=True)
-                    self.mouse_scroll(8)
-                elif self.mode == "typing":
-                    print(">> [快捷键] 音量+ -> 页面平滑滚屏 (4 格)", flush=True)
-                    self.mouse_scroll(4)
+                if self.mode in ("terminal", "typing"):
+                    print(">> [快捷键] 音量+ -> 平滑滚屏 (6 格)", flush=True)
+                    self.mouse_scroll(6)
                 elif self.mode == "mouse":
                     print(">> [快捷键] 音量+ -> 系统音量增加", flush=True)
                     self.submitter.send_key(e.KEY_VOLUMEUP)
@@ -400,12 +397,9 @@ class IntegratedHIDController:
 
         if code in VOL_DOWN_KEYS:
             if is_down or is_repeat:
-                if self.mode == "terminal":
-                    print(">> [快捷键] 音量- -> 终端平滑滚屏 (-8 格)", flush=True)
-                    self.mouse_scroll(-8)
-                elif self.mode == "typing":
-                    print(">> [快捷键] 音量- -> 页面平滑滚屏 (-4 格)", flush=True)
-                    self.mouse_scroll(-4)
+                if self.mode in ("terminal", "typing"):
+                    print(">> [快捷键] 音量- -> 平滑滚屏 (-6 格)", flush=True)
+                    self.mouse_scroll(-6)
                 elif self.mode == "mouse":
                     print(">> [快捷键] 音量- -> 系统音量减小", flush=True)
                     self.submitter.send_key(e.KEY_VOLUMEDOWN)
